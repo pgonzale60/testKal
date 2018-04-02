@@ -1,0 +1,1747 @@
+---
+title: "Test estimated counts"
+author: "pgonzale60"
+date: "June 13, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Download experiments
+
+I will use 4 experiments:
+
+- SRP047132 The miR-155/PU.1 axis acts on Pax5 to enable efficient terminal B cell differentiation [RNA-Seq]
+- SRP102517 Argonaute CLIP defines a deregulated miR-122 bound transcriptome that predicts patient survival in human liver cancer (Mouse RNA-Seq)
+- SRP057986 Context- and cell-type specific function of miR155-Socs1 interaction in immune regulation
+- SRP033131 Global analyses of the effect of different cellular contexts on microRNA targeting (miR-124. miR-155)
+- SRP064167 Tissue gene expression of Xenopus laevis J strain [tissue]
+
+```{bash}
+# Download SRA
+
+for exprm in SRP047132 SRP102517 SRP057986 SRP064167 SRP033131; do
+  wget -qO- ftp://ftp-trace.ncbi.nlm.nih.gov/sra/sra-instant/reads/ByStudy/sra/SRP/${exprm:0:6}/${exprm}/ | cut -d \> -f 2 | grep ^SRR | sed 's,/</a,,' > sraFiles.tsv
+  
+  while IFS= read -r id
+  do
+   cmd="mkdir /LUSTRE/usuario/pgonzale/testKal/data/SRA/${exprm};
+   cd /LUSTRE/usuario/pgonzale/testKal/data/SRA/${exprm};
+   wget ftp://ftp-trace.ncbi.nlm.nih.gov/sra/sra-instant/reads/ByStudy/sra/SRP/${exprm:0:6}/${exprm}/${id}/${id}.sra"
+   echo "$cmd" | qsub -l walltime=64:00:00,vmem=2G -q default -NDown${id}
+  done < sraFiles.tsv
+done
+
+# Some download failed. I can see that with `grep "Giving up" DownSRR*`. I will restart those downloads
+# First capture which SRAs failed.
+grep "Giving up" DownSRR* | sed 's/Down//; s/\.[eo][0-9]\+.\+//' > faildDownlds.txt
+# Remove all log files
+rm DownSRR*
+# Find to which SRP they correspond
+find data/SRA/ -name "*sra" | grep -f faildDownlds.txt | sed 's/.sra//' | tr '/' $'\t' | cut -f 3,4 > srpsfaildDownlds.tsv
+# Resend download qsub
+
+while IFS='\n' read -r ids
+  do
+  if [[ $ids == *"SRR"* ]]
+    then
+    exprm=$(echo $ids | sed 's/\s\+/ /' | cut -d ' ' -f 1)
+    id=$(echo $ids | cut -d ' ' -f 2)
+    cmd="cd /LUSTRE/usuario/pgonzale/testKal/data/SRA/$exprm;
+      wget ftp://ftp-trace.ncbi.nlm.nih.gov/sra/sra-instant/reads/ByStudy/sra/SRP/${exprm:0:6}/${exprm}/${id}/${id}.sra"
+    echo "$cmd" | qsub -l walltime=64:00:00,vmem=2G -q default -N Down${id}
+  fi
+  
+done < srpsfaildDownlds.tsv
+
+rm srpsfaildDownlds.tsv faildDownlds.txt
+
+# Remove original download and rename succesful download
+for sSRA in $(find data/SRA/ -name "*sra.1"); do
+  fSRA=${sSRA%.1}
+  mv $sSRA $fSRA
+done
+
+# Decompress SRA to fastq
+for SRA in $(find /LUSTRE/usuario/pgonzale/testKal/data/SRA/SRP033131 -name "*sra"); do
+  tID=$(basename $SRA)
+  id=${tID%.sra}
+  SRP=$(basename $(dirname $SRA))
+  mkdir -p /LUSTRE/usuario/pgonzale/testKal/data/raw/${SRP}
+  cmd="cd /LUSTRE/usuario/pgonzale/testKal/data/raw/${SRP};
+    /LUSTRE/usuario/pgonzale/software/sra/sratoolkit.2.8.0-ubuntu64/bin/fastq-dump --split-3 --gzip ${SRA}"
+  echo "$cmd" | qsub -l walltime=64:00:00,vmem=2G -q default -N Decomp${id}
+done
+
+
+
+rm DecompSRR*
+
+# Remove sra files
+find data/SRA/ -name "*sra" -exec rm {} \;
+```
+
+
+
+## Organize directories
+```{bash}
+cd /home/pgonzale/Documents/BI/testKal/
+mkdir output scripts data report
+cd output
+mkdir DE counts
+cd DE
+mkdir edgeR limma-voom DESeq2 sleuth
+cd ../counts
+mkdir featCounts stringTie kallisto
+cd /home/pgonzale/Documents/BI/testKal/
+```
+
+
+# Get counts 
+
+## X. laevis
+
+
+```{bash star index}
+cmd="cd /LUSTRE/usuario/pgonzale/Xenopus/;
+module load STAR/2.5.2a;
+STAR --runThreadN 1 --runMode genomeGenerate --genomeDir data/genome/ \
+  --genomeFastaFiles data/genome/Xla.v91.repeatMasked.fa \
+  --sjdbGTFfile data/transcriptome/XL9_1_PASAv2_20170530_allTranscripts_origGenIds.gtf \
+  --sjdbOverhang 99"
+echo $cmd | qsub -N STARIndexXenopus -l mem=5G,vmem=5G,nodes=1:ppn=1,walltime=60:00:00 -q ensam
+```
+
+
+
+# X. laevis SRP064167
+
+```{bash}
+scp 10.10.10.240:/LUSTRE/usuario/pgonzale/testKal/output/nextflow/SRP064167/reference_genome/XL9_1_PASAv2_20170530_allTranscripts_origGenIds.transcript_gene_cdnalen.tsv /storage/testKal/data/transcriptomes/
+
+scp 10.10.10.240:/LUSTRE/usuario/pgonzale/testKal/output/nextflow/SRP064167/reference_genome/XL9_1_PASAv2_20170530_allTranscripts_origGenIds.3utrs.fa.gz /storage/testKal/data/utrs/
+
+scp -r 10.10.10.240:/LUSTRE/usuario/pgonzale/testKal/output/nextflow/SRP064167/uKallisto/* /storage/testKal/output/counts/uKallisto/SRP064167/
+
+scp -r 10.10.10.240:/LUSTRE/usuario/pgonzale/testKal/output/nextflow/SRP064167/cKallisto/* /storage/testKal/output/counts/cKallisto/SRP064167/
+
+scp 10.10.10.240:/LUSTRE/usuario/pgonzale/testKal/output/nextflow/SRP064167/featureCounts/merged_gene_counts.txt /storage/testKal/output/counts/featureCounts/SRP064167/
+
+scp 10.10.10.240:/LUSTRE/usuario/pgonzale/testKal/output/nextflow/SRP064167/*count_matrix.csv /storage/testKal/output/counts/stringtie/SRP064167
+```
+
+
+```{bash index}
+cd /LUSTRE/usuario/pgonzale/Xenopus
+module load cufflinks kallisto/0.43.0
+
+gffread data/transcriptome/XL9_1_PASAv2_20170530_allTranscripts_origGenIds.gtf -g data/genome/Xla.v91.repeatMasked.fa -w data/transcriptome/XL9_1_PASAv2.cdna.fa
+gzip data/transcriptome/XL9_1_PASAv2.cdna.fa
+
+
+time kallisto index -i data/transcriptome/XL9_1_PASAv2.cdna.kidx data/transcriptome/XL9_1_PASAv2.cdna.fa.gz
+mv data/transcriptome/XL9_1_PASAv2.cdna.kidx ../testKal/data/transcriptomes
+```
+
+```{bash quantify}
+cd /LUSTRE/usuario/pgonzale/testKal
+for samp in data/raw/SRP064167/*1.fq.gz; do
+  lFq=$(basename $samp)
+  sName=${lFq%_1.fq.gz}
+  cmd="module load kallisto/0.43.0;
+  cd /LUSTRE/usuario/pgonzale/testKal/;
+  mkdir -p output/counts/kallisto/SRP064167/$sName;
+  kallisto quant -i data/transcriptome/mus_musculus.GRCm38.rna.kidx -t 4 -b 100 $samp ${samp/_1.fq.gz/_2.fq.gz} -o output/counts/kallisto/SRP064167/$sName"
+  
+  echo $cmd | qsub -N kallisto$sName -l vmem=6G,nodes=1:ppn=4
+done
+```
+
+## DE
+
+### EdgeR and voom
+```{r}
+library("edgeR")
+library("dplyr")
+library("cowplot")
+library("mixOmics")
+
+sampleInfo <- read.table("../data/metadata/SRP064167_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo$tissue <- relevel(factor(sampleInfo$tissue), ref="lung")
+design <- model.matrix(~tissue, data=sampleInfo)
+
+gDict <- read.table("../data/transcriptomes/XL9_1_PASAv2_20170530_allTranscripts_origGenIds.transcript_gene_cdnalen.tsv", header=F, sep="\t") %>%
+  dplyr::arrange(dplyr::desc(V3)) %>% filter(!duplicated(V2))
+
+rawCountTable <- read.table("../output/counts/featureCounts/manualTissues.counts.txt", header=TRUE, sep="\t", row.names=1)[, -c(1:5), drop = F]
+colnames(rawCountTable) <- sub(".+aligned_sorted.(.+).sorted.bam", "\\1", colnames(rawCountTable))
+
+rawCountTable <- rawCountTable[, colnames(rawCountTable) %in% sampleInfo$id]
+ 
+raw.pca<- pca(t(as.matrix(rawCountTable)), ncomp = 3, scale = FALSE)
+plotIndiv(raw.pca, group= sampleInfo$tissue,
+          legend = TRUE, title = 'Raw counts')
+
+
+dgeFull <- DGEList(counts = rawCountTable, group = sampleInfo$tissue)
+dgeFull <- calcNormFactors(dgeFull)
+sy <- estimateDisp(dgeFull, design)
+fit <- glmFit(sy, design)
+
+for (tissuen in c(2, 4, 7, 8)){
+  toSyl <- topTags(glmLRT(fit, coef = tissuen), n = nrow(rawCountTable))$table
+  toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+  rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+  bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+  outFile <- paste("../output/DE/edgeR/SRP064167_", 
+                   levels(sampleInfo$tissue)[tissuen], ".tsv.gz", sep = "")
+  write.table(bySignif, file = gzfile(outFile),
+              row.names=T, col.names=F, sep="\t", quote=FALSE)
+}
+
+v <- voom(sy, design, plot=T)
+
+fit <- lmFit(v, design)
+fit <- eBayes(fit)
+
+summary(decideTests(fit))
+
+
+for (tissuen in c(2, 4, 7, 8)){
+  toSyl <- topTable(fit, coef = tissuen, n = Inf)
+  toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+  rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+  bySignif <- toSyl[order(log2(toSyl$adj.P.Val) * sign(toSyl$logFC)), ]
+  outFile <- paste("../output/DE/limma-voom/SRP064167_", 
+                   levels(sampleInfo$tissue)[tissuen], ".tsv.gz", sep = "")
+  write.table(bySignif, file = gzfile(outFile),
+              row.names=T, col.names=F, sep="\t", quote=FALSE)
+}
+```
+
+### StringTie EdgeR
+```{r}
+library("edgeR")
+library("dplyr")
+library("cowplot")
+library("mixOmics")
+
+sampleInfo <- read.table("../data/metadata/SRP064167_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo$tissue <- relevel(factor(sampleInfo$tissue), ref="lung")
+design <- model.matrix(~tissue, data=sampleInfo)
+
+gDict <- read.table("../data/transcriptomes/XL9_1_PASAv2_20170530_allTranscripts_origGenIds.transcript_gene_cdnalen.tsv", header=F, sep="\t") %>%
+  dplyr::arrange(dplyr::desc(V3)) %>% filter(!duplicated(V2))
+rawCountTable <- read.table("../output/counts/stringtie/SRP064167/gene_count_matrix.csv", header=TRUE, sep=",", row.names=1)
+
+rawCountTable <- rawCountTable[, colnames(rawCountTable) %in% sampleInfo$id]
+ 
+raw.pca<- pca(t(as.matrix(rawCountTable)), ncomp = 3, scale = FALSE)
+plotIndiv(raw.pca, group= sampleInfo$tissue,
+          legend = TRUE, title = 'Raw counts')
+
+
+dgeFull <- DGEList(counts = rawCountTable, group = sampleInfo$tissue)
+dgeFull <- calcNormFactors(dgeFull)
+sy <- estimateDisp(dgeFull, design)
+fit <- glmFit(sy, design)
+
+for (tissuen in c(2, 4, 7, 8)){
+  toSyl <- topTags(glmLRT(fit, coef = tissuen), n = nrow(rawCountTable))$table
+  toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+  rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+  bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+  outFile <- paste("../output/DE/edgeR/gstt_SRP064167_", 
+                   levels(sampleInfo$tissue)[tissuen], ".tsv.gz", sep = "")
+  write.table(bySignif, file = gzfile(outFile),
+              row.names=T, col.names=F, sep="\t", quote=FALSE)
+}
+
+list.files("../output/DE/sleuth/")
+# Now at transcript level
+tkal <- read.table(list.files("../output/DE/sleuth/", pattern = "SRP064167.+", full.names = T)[1], header=F, sep="\t", as.is = T)
+rawCountTable <- read.table("../output/counts/stringtie/SRP064167/transcript_count_matrix.csv", header=TRUE, sep=",", row.names=1)
+
+rawCountTable <- rawCountTable[rownames(rawCountTable) %in% tkal$V1,
+                               colnames(rawCountTable) %in% sampleInfo$id]
+ 
+raw.pca<- pca(t(as.matrix(rawCountTable)), ncomp = 3, scale = FALSE)
+plotIndiv(raw.pca, group= sampleInfo$tissue,
+          legend = TRUE, title = 'Raw counts')
+
+
+dgeFull <- DGEList(counts = rawCountTable, group = sampleInfo$tissue)
+dgeFull <- calcNormFactors(dgeFull)
+sy <- estimateDisp(dgeFull, design)
+fit <- glmFit(sy, design)
+
+for (tissuen in c(2, 4, 7, 8)){
+  toSyl <- topTags(glmLRT(fit, coef = tissuen), n = nrow(rawCountTable))$table
+  bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+  outFile <- paste("../output/DE/edgeR/tstt_SRP064167_", 
+                   levels(sampleInfo$tissue)[tissuen], ".tsv.gz", sep = "")
+  write.table(bySignif, file = gzfile(outFile),
+              row.names=T, col.names=F, sep="\t", quote=FALSE)
+}
+```
+
+### Sleuth
+```{r}
+library("sleuth")
+
+gDict <- read.table("../data/transcriptomes/XL9_1_PASAv2_20170530_allTranscripts_origGenIds.transcript_gene_cdnalen.tsv", header=F, sep="\t") %>%
+  dplyr::arrange(dplyr::desc(V3)) %>% filter(!duplicated(V2))
+
+kal_dirs <- list.dirs("../output/counts/cKallisto/SRP064167/")
+sample_id <- basename(kal_dirs)
+
+s2c <- read.table("../data/metadata/SRP064167_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+kal_dirs <- kal_dirs[sample_id %in% s2c$id]
+s2c <- dplyr::select(s2c, sample = id, tissue) %>%
+  dplyr::mutate(path = kal_dirs, tissue = relevel(factor(tissue), ref="lung"))
+
+
+t2g <- read.table("../data/transcriptomes/XL9_1_PASAv2_20170530_allTranscripts_origGenIds.transcript_gene_cdnalen.tsv", header=F, sep="\t", as.is = T) %>%
+  dplyr::rename(target_id = V1, ens_gene = V2)
+
+so <- sleuth_prep(s2c, target_mapping = t2g,
+                  extra_bootstrap_summary = TRUE)
+
+# plot_pca(so, color_by = 'batch', text_labels = TRUE)
+
+
+so <- sleuth_fit(so, ~tissue, 'full')
+design_matrix(so)
+so <- sleuth_wt(so, which_beta = 'tissuebrain')
+so <- sleuth_wt(so, which_beta = 'tissueheart')
+so <- sleuth_wt(so, which_beta = 'tissueliver')
+so <- sleuth_wt(so, which_beta = 'tissuemuscle')
+
+for (tissue in c("brain", "heart", "liver", "muscle")){
+  cont.res <- sleuth_results(so, paste("tissue", tissue, sep = ""), show_all = F)
+  
+  bySignif <- cont.res[order(log2(cont.res$qval) * sign(cont.res$b)), ] %>%
+    dplyr::select(target_id, b, qval)
+  outFile <- paste("../output/DE/sleuth/SRP064167_", tissue, ".tsv.gz", sep = "")
+  write.table(bySignif, file = gzfile(outFile),
+              row.names=F, col.names=F, sep="\t", quote=FALSE)
+}
+
+
+
+# Gene level
+gso <- sleuth_prep(s2c, target_mapping = t2g,
+  aggregation_column = 'ens_gene', extra_bootstrap_summary = TRUE)
+
+gso <- sleuth_fit(gso, ~tissue, 'full')
+gso <- sleuth_wt(gso, which_beta = 'tissuebrain')
+gso <- sleuth_wt(gso, which_beta = 'tissueheart')
+gso <- sleuth_wt(gso, which_beta = 'tissueliver')
+gso <- sleuth_wt(gso, which_beta = 'tissuemuscle')
+
+for (tissue in c("brain", "heart", "liver", "muscle")){
+  cont.res <- sleuth_results(gso, paste("tissue", tissue, sep = ""), show_all = F)
+  
+  bySignif <- cont.res[order(log2(cont.res$qval) * sign(cont.res$b)), ] %>%
+    dplyr::select(target_id, b, qval) %>%
+    dplyr::mutate(target_id = gDict[match(target_id, gDict$V2), 1])
+  outFile <- paste("../output/DE/sleuth/gSRP064167_", tissue, ".tsv.gz", sep = "")
+  write.table(bySignif, file = gzfile(outFile),
+              row.names=F, col.names=F, sep="\t", quote=FALSE)
+}
+
+
+# Pseudoaligned against unique transcript per gene
+kal_dirs <- list.dirs("../output/counts/uKallisto/SRP064167/")
+s2c <- read.table("../data/metadata/SRP064167_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+kal_dirs <- kal_dirs[sample_id %in% s2c$id]
+s2c <- dplyr::select(s2c, sample = id, tissue) %>%
+  dplyr::mutate(path = kal_dirs, tissue = relevel(factor(tissue), ref="lung"))
+
+so <- sleuth_prep(s2c, target_mapping = t2g,
+                  extra_bootstrap_summary = TRUE)
+
+so <- sleuth_fit(so, ~tissue, 'full')
+so <- sleuth_wt(so, which_beta = 'tissuebrain')
+so <- sleuth_wt(so, which_beta = 'tissueheart')
+so <- sleuth_wt(so, which_beta = 'tissueliver')
+so <- sleuth_wt(so, which_beta = 'tissuemuscle')
+
+for (tissue in c("brain", "heart", "liver", "muscle")){
+  cont.res <- sleuth_results(so, paste("tissue", tissue, sep = ""), show_all = F)
+  
+  bySignif <- cont.res[order(log2(cont.res$qval) * sign(cont.res$b)), ] %>%
+    dplyr::select(target_id, b, qval)
+  outFile <- paste("../output/DE/sleuth/tuSRP064167_", tissue, ".tsv.gz", sep = "")
+  write.table(bySignif, file = gzfile(outFile),
+              row.names=F, col.names=F, sep="\t", quote=FALSE)
+}
+```
+
+
+### Subset kallisto transcripts
+```{r}
+# tkal <- read.table("../output/DE/sleuth/tSRP047132.tsv.gz", header=F, sep="\t", as.is = T)
+# gkal <- read.table("../output/DE/sleuth/gSRP047132.tsv.gz", header=F, sep="\t", as.is = T)
+# gDict <- read.table("../data/lens.txt", header=F, sep="\t")
+# subDict <- gDict[gDict$V1 %in% gDict$V1[gDict$V2 %in% gkal$V1], ]
+# subtKal <- tkal[tkal$V1 %in% subDict$V2,]
+# write.table(subtKal, file = gzfile("../output/DE/sleuth/subtSRP047132.tsv.gz"),
+#             row.names=F, col.names=F, sep="\t", quote=FALSE)
+# 
+# bySignif <- subtKal[!duplicated(fullDict$V1[match(subtKal$V1, fullDict$V2)]), ]
+# write.table(bySignif, file = gzfile("../output/DE/sleuth/O1subtSRP047132.tsv.gz"),
+#             row.names=F, col.names=F, sep="\t", quote=FALSE)
+```
+
+### tximport
+```{r}
+library("tximport")
+library("edgeR")
+library("dplyr")
+
+sampleInfo <- read.table("../data/metadata/SRP064167_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo$tissue <- relevel(factor(sampleInfo$tissue), ref="lung")
+design <- model.matrix(~tissue, data=sampleInfo)
+                  
+gDict <- read.table("../data/transcriptomes/XL9_1_PASAv2_20170530_allTranscripts_origGenIds.transcript_gene_cdnalen.tsv", header=F, sep="\t") %>%
+  dplyr::arrange(dplyr::desc(V3)) %>% filter(!duplicated(V2))
+tx2gene <- read.table("../data/transcriptomes/XL9_1_PASAv2_20170530_allTranscripts_origGenIds.transcript_gene_cdnalen.tsv", header=F, sep="\t", as.is = T) %>%
+  dplyr::rename(target_id = V1, ens_gene = V2) %>%
+  dplyr::select(-V3)
+
+files <- file.path("../output/counts/cKallisto/SRP064167/", sampleInfo$id, "abundance.h5")
+names(files) <- sampleInfo$id
+txi.kallisto <- tximport(files, type = "kallisto", txOut = F, tx2gene = tx2gene)
+
+cts <- txi.kallisto$counts
+normMat <- txi.kallisto$length
+normMat <- normMat/exp(rowMeans(log(normMat)))
+o <- log(calcNormFactors(cts/normMat)) + log(colSums(cts/normMat))
+y <- DGEList(cts)
+y$offset <- t(t(log(normMat)) + o)
+
+
+sy <- estimateDisp(y, design)
+fit <- glmFit(y, design, sy$tagwise.dispersion)
+
+
+for (tissuen in c(2, 4, 7, 8)){
+  toSyl <- topTags(glmLRT(fit, coef = tissuen), n = nrow(cts))$table
+  toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+  rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+  bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+  outFile <- paste("../output/DE/edgeR/gtximp_SRP064167_", 
+                   levels(sampleInfo$tissue)[tissuen], ".tsv.gz", sep = "")
+  write.table(bySignif, file = gzfile(outFile),
+              row.names=T, col.names=F, sep="\t", quote=FALSE)
+}
+
+
+# Comparable to kallisto filter
+gkal <- read.table(list.files("../output/DE/sleuth/", pattern = "gSR.+", full.names = T)[1], header=F, sep="\t", as.is = T)
+kalAccp <- rownames(txi.kallisto$counts) %in% tx2gene[match(gkal$V1, tx2gene$target_id), 2]
+cts <- txi.kallisto$counts[kalAccp, ]
+normMat <- txi.kallisto$length[kalAccp, ]
+normMat <- normMat/exp(rowMeans(log(normMat)))
+o <- log(calcNormFactors(cts/normMat)) + log(colSums(cts/normMat))
+y <- DGEList(cts)
+y$offset <- t(t(log(normMat)) + o)
+
+
+sy <- estimateDisp(y, design)
+fit <- glmFit(y, design, sy$tagwise.dispersion)
+
+for (tissuen in c(2, 4, 7, 8)){
+  toSyl <- topTags(glmLRT(fit, coef = tissuen), n = nrow(cts))$table
+  toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+  rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+  bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+  outFile <- paste("../output/DE/edgeR/gtximpFilt_SRP064167_", 
+                   levels(sampleInfo$tissue)[tissuen], ".tsv.gz", sep = "")
+  write.table(bySignif, file = gzfile(outFile),
+              row.names=T, col.names=F, sep="\t", quote=FALSE)
+}
+
+
+# Now at transcript level_filtered
+tkal <- read.table(list.files("../output/DE/sleuth/", pattern = "tu.+", full.names = T)[1], header=F, sep="\t", as.is = T)
+files <- file.path("../output/counts/uKallisto/SRP064167/", sampleInfo$id, "abundance.h5")
+names(files) <- sampleInfo$id
+txi.kallisto <- tximport(files, type = "kallisto", txOut = TRUE)
+
+kalAccp <- rownames(txi.kallisto$counts) %in% tkal$V1
+cts <- txi.kallisto$counts[kalAccp, ]
+normMat <- txi.kallisto$length[kalAccp, ]
+normMat <- normMat/exp(rowMeans(log(normMat)))
+o <- log(calcNormFactors(cts/normMat)) + log(colSums(cts/normMat))
+y <- DGEList(cts)
+y$offset <- t(t(log(normMat)) + o)
+
+
+sy <- estimateDisp(y, design)
+fit <- glmFit(y, design, sy$tagwise.dispersion)
+
+for (tissuen in c(2, 4, 7, 8)){
+  toSyl <- topTags(glmLRT(fit, coef = tissuen), n = nrow(cts))$table
+  toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+  rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+  bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+  outFile <- paste("../output/DE/edgeR/utximpFilt_SRP064167_", 
+                   levels(sampleInfo$tissue)[tissuen], ".tsv.gz", sep = "")
+  write.table(bySignif, file = gzfile(outFile),
+              row.names=T, col.names=F, sep="\t", quote=FALSE)
+}
+
+```
+
+
+### Direct import
+```{r}
+library("edgeR")
+library("dplyr")
+
+fullDict <- read.table("../data/transcriptomes/XL9_1_PASAv2_20170530_allTranscripts_origGenIds.transcript_gene_cdnalen.tsv", header=F, sep="\t")
+kal_tsvs <- list.files("../output/counts/uKallisto/SRP064167", pattern = ".+tsv", recursive = T, full.names = T)
+ksamp <- read.table(kal_tsvs[1], header=T, sep="\t", as.is = T)
+mCounts <- data.frame(row.names = ksamp$target_id)
+
+for(samp in kal_tsvs){
+  ksamp <- read.table(samp, header=T, sep="\t", as.is = T)
+  mCounts <- cbind(mCounts, ksamp$est_counts)
+}
+
+colnames(mCounts) <- sub(".+(SRR[0-9]+).+", "\\1", kal_tsvs)
+sampleInfo <- read.table("../data/metadata/SRP064167_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo$tissue <- relevel(factor(sampleInfo$tissue), ref="lung")
+design <- model.matrix(~tissue, data=sampleInfo)
+
+mCounts <- mCounts[, colnames(mCounts) %in% sampleInfo$id]
+
+keep <- rowSums(cpm(mCounts)>1) >= 2
+y <- DGEList(mCounts[keep, ])
+y <- calcNormFactors(y)
+sy <- estimateDisp(y, design)
+fit <- glmFit(sy, design)
+
+
+for (tissuen in c(2, 4, 7, 8)){
+  toSyl <- topTags(glmLRT(fit, coef = tissuen), n = nrow(cts))$table
+  bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+  outFile <- paste("../output/DE/edgeR/uDirFilt_SRP064167_", 
+                   levels(sampleInfo$tissue)[tissuen], ".tsv.gz", sep = "")
+  write.table(bySignif, file = gzfile(outFile),
+              row.names=T, col.names=F, sep="\t", quote=FALSE)
+}
+```
+
+### Sylamer
+```{bash sylamer}
+cd /storage/testKal
+rm output/sylamer/*
+
+for contr in $(find output/DE/ -name "*SRP064167*tsv.gz"); do
+  fName=$(basename $contr)
+  cName=${fName%.tsv.gz}
+  pDir=$(dirname $contr)
+  mthd=$(basename $pDir)
+  sylamer -fasta data/utrs/XL9_1_PASAv2_20170530_allTranscripts_origGenIds.3utrs.fa.gz -k 7 \
+    -o output/sylamer/${cName}_${mthd}.Syl.tsv \
+    -m 4 -words data/sylSeeds/X_tropicalis.7 \
+    -universe $contr -grow-times 20 -v 0 >& temp
+done
+  
+gzip output/sylamer/*.Syl.tsv
+```
+
+#### Visualize
+```{r}
+# very basic plotting script
+library(gplots)
+
+## add 3 top miRs, with word and name, colors. Named can be in dotted red on top.
+topN <- 3
+
+seedFile <- "../data/sylSeeds/X_tropicalis.7"
+
+
+seedTab  <- read.table(seedFile, row.names=1, as.is=TRUE)
+# seedTab  <- seedTab[seedTab[,1] != "mml-miR-124a",,drop=FALSE]
+
+inFiles <- list.files("../output/sylamer/", ".+Syl.tsv.gz", full.names=TRUE, recursive=TRUE)
+
+for (inFile in inFiles) {
+   outFile <- sub(".tsv.gz$",".png",inFile)
+   if (file.exists(outFile)) {
+      next
+   }
+   print(inFile)
+   # path <- sub("^.+?\\/","",dirname(inFile))
+   word <- "CATTCCA"
+   # if (regexpr("\\.7$", seedFile) > 0) {
+   #    word <- substr(word, 1, 7)
+   # }
+   # mir  <- seedTab[word,1]
+   contrst <- sub("(.+).Syl.tsv.gz", "\\1", basename(inFile))
+   mSign <- ifelse(grepl("voom", contrst), yes = 1, no = -1)
+   tab <- cbind(0,read.table(inFile, header=TRUE, row.names=1, check.names=FALSE) * mSign)
+   tab <- tab[rownames(tab) %in% rownames(seedTab),]
+   xvals <- as.numeric(colnames(tab))
+   # sort tab
+   tab <- tab[order(apply(tab, 1, max), decreasing=TRUE),]
+   
+   png(filename=outFile, width=640, height=480)
+   plot(NULL, xlim=range(xvals), ylim=c(min(-10,min(tab)), max(30, max(tab))),
+        xlab="", ylab="syl-P", main=paste(contrst, sep=""))
+   cols <- rich.colors(topN+2)
+   for (i in rev(seq_len(nrow(tab)))) {
+      col <- ifelse(i <= topN, cols[i], "grey")
+      lwd <- ifelse(i <= topN, 2, 1)
+      lines(xvals, tab[i,], col=col, lwd=lwd)
+   }
+   lines(xvals, tab[word,], col="red", lty=3, lwd=2)
+   abline(h=0)
+   words <- rownames(tab)[seq_len(topN)]
+   mirs  <- seedTab[words,1]
+   legend("bottomright", legend=paste(words, mirs), lty=1, lwd=2, col=cols[seq_len(topN)], bty="n")
+   dev.off()
+}
+```
+
+### Compare counts
+```{r}
+library(edgeR)
+sampleInfo <- read.table("../data/metadata/SRP064167_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo$tissue <- relevel(factor(sampleInfo$tissue), ref="lung")
+
+rawCountTable <- read.table("../output/counts/featureCounts/SRP064167/merged_gene_counts.txt", header=TRUE, sep="\t", row.names=1)[, -c(1:5)]
+colnames(rawCountTable) <- sub("(.+).sorted.bam", "\\1", colnames(rawCountTable))
+rawCountTable <- rawCountTable[, colnames(rawCountTable) %in% sampleInfo$id]
+
+sttCountTable <- read.table("../output/counts/stringtie/SRP064167/gene_count_matrix.csv", header=TRUE, sep=",", row.names=1)
+sttCountTable <- sttCountTable[match(rownames(rawCountTable), rownames(sttCountTable)),
+                               colnames(sttCountTable) %in% sampleInfo$id]
+
+summary(diag(cor(as.matrix(sttCountTable), as.matrix(rawCountTable), method = "spearman")))
+
+
+frawCountTable <- rawCountTable[rowSums(cpm(rawCountTable) > 1) > 3, ]
+fsttCountTable <- sttCountTable[rownames(sttCountTable) %in% rownames(frawCountTable),]
+
+summary(diag(cor(as.matrix(fsttCountTable), as.matrix(frawCountTable), method = "pearson")))
+strgLib <- which.min(diag(cor(as.matrix(fsttCountTable), as.matrix(frawCountTable), method = "pearson")))
+
+unxplndCounts <- cbind(frawCountTable[, strgLib], fsttCountTable[, strgLib])
+colnames(unxplndCounts) <- c("featC", "stt")
+rownames(unxplndCounts) <- rownames(frawCountTable)
+unxplndCounts <- unxplndCounts[order(abs(unxplndCounts[, 1] - unxplndCounts[, 2]), decreasing = T), ]
+colSums(unxplndCounts)
+
+sampleInfo[sampleInfo$id == "SRR2515140", ]
+
+updtSamp <- read.table("../output/counts/featureCounts/manualTissues.counts.txt", header=TRUE, sep="\t", row.names=1)[, -c(1:5), drop = F]
+colnames(updtSamp) <- sub(".+aligned_sorted.(.+).sorted.bam", "\\1", colnames(updtSamp))
+
+summary(diag(cor(updtSamp, sttCountTable)))
+```
+
+
+## M. musculus
+
+```{bash index}
+cd /LUSTRE/usuario/pgonzale/testKal
+module load cufflinks kallisto/0.43.0
+
+gffread ../miR-155/data/transcriptome/pcMus_musculus.GRCm38.88.chr.gtf -g ../miR-155/data/genome/Mus_musculus.GRCm38.dna.toplevel.fa -w data/transcriptomes/pcMus_musculus.GRCm38.88.cdna.fa
+gzip data/transcriptomes/pcMus_musculus.GRCm38.88.cdna.fa
+
+grep "3UTR" ../miR-155/data/transcriptome/mikpcMus_musculus.GRCm38.88.chr.gtf > data/transcriptomes/pcMus_musculus.GRCm38.88.3utrs.gtf
+gffread data/transcriptomes/pcMus_musculus.GRCm38.88.3utrs.gtf -g ../miR-155/data/genome/Mus_musculus.GRCm38.dna.toplevel.fa -w  data/transcriptomes/pcMus_musculus.GRCm38.88.3utrs.fa
+
+awk -F $'\t' 'BEGIN {OFS = FS} /^>/ {id = gensub(/>(.+)/, "\\1", "g", $0); if (seqlen){print id, seqlen}; seqlen=0;next; } { seqlen += length($0)}END{print id, seqlen}' data/transcriptomes/pcMus_musculus.GRCm38.88.3utrs.fa | sort | tr ' ' $'\t' | sort -nrk 3 | sed 's/gene=//' > data/transcriptomes/pcMus_musculus.GRCm38.88.transcript_ensgene_3len.tsv
+
+sort -k2,2 -u data/transcriptomes/pcMus_musculus.GRCm38.88.transcript_ensgene_3len.tsv > data/transcriptomes/pcMus_musculus.GRCm38.88.transcript_ensgene_3len_longest.tsv
+
+cut -f 1 data/transcriptomes/pcMus_musculus.GRCm38.88.transcript_ensgene_3len_longest.tsv > tempLong.id
+
+perl scripts/get_ids_from_fasta.pl tempLong.id data/transcriptomes/pcMus_musculus.GRCm38.88.cdna.fa.gz | gzip -c > data/transcriptomes/pcMus_musculus.GRCm38.88.transcript_ensgene_3len_longest.cdna.fa.gz
+
+time kallisto index -i data/transcriptomes/pcMus_musculus.GRCm38.88.transcript_ensgene_3len_longest.cdna.kidx data/transcriptomes/pcMus_musculus.GRCm38.88.transcript_ensgene_3len_longest.cdna.fa.gz
+```
+
+```{bash quantify}
+cd /LUSTRE/usuario/pgonzale/testKal
+for samp in ../miR-155/output/nfQuant/trim_galore/*.fq.gz; do
+  lFq=$(basename $samp)
+  sName=${lFq%_trimmed.fq.gz}
+  cmd="module load kallisto/0.43.0;
+  cd /LUSTRE/usuario/pgonzale/testKal/;
+  mkdir -p output/counts/kallisto/SRP047132/$sName;
+  kallisto quant -i data/transcriptomes/pcMus_musculus.GRCm38.88.transcript_ensgene_3len_longest.cdna.kidx --single -l 200 -s 20 -t 4 -b 100 $samp ${samp/_1.fq.gz/_2.fq.gz} -o output/counts/kallisto/SRP047132/$sName"
+  
+  echo $cmd | qsub -N kallisto$sName -l vmem=6G,nodes=1:ppn=4
+done
+```
+
+# Sleuth
+```{r}
+library("sleuth")
+
+gDict <- read.table("../data/transcriptomes/pcMus_musculus.GRCm38.88.transcript_ensgene_3len_longest.tsv",
+                    header=F, sep="\t", as.is = T)
+sample_id <- dir(file.path("../output/counts/kallisto/SRP047132/"))
+kal_dirs <- file.path("../output/counts/kallisto/SRP047132/", sample_id)
+
+# Downloaded this information from:
+# https://trace.ncbi.nlm.nih.gov/Traces/study/?acc=SRP047132
+s2c <- read.table("../data/metadata/SRP047132_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+s2c <- dplyr::select(s2c, sample = Run_s, condition = genotype_s) %>%
+  dplyr::mutate(path = kal_dirs, condition = relevel(factor(condition), ref="Wild type"))
+
+
+t2g <- read.table("../data/transcriptomes/pcMus_musculus.GRCm38.88.transcript_ensgene_3len.tsv", header=F, sep="\t", as.is = T) %>%
+  dplyr::rename(target_id = V1, ens_gene = V2)
+
+so <- sleuth_prep(s2c, target_mapping = t2g,
+                  extra_bootstrap_summary = TRUE)
+
+# plot_pca(so, color_by = 'batch', text_labels = TRUE)
+
+
+so <- sleuth_fit(so, ~condition, 'full')
+design_matrix(so)
+so <- sleuth_wt(so, which_beta = 'conditionmiR-155[-/-]')
+m155KO.res <- sleuth_results(so, 'conditionmiR-155[-/-]')
+
+bySignif <- m155KO.res[order(log2(m155KO.res$qval) * sign(m155KO.res$b)), ] %>%
+  dplyr::select(target_id, b, qval)
+write.table(bySignif, file = gzfile("../output/DE/sleuth/SRP047132.tsv.gz"),
+            row.names=F, col.names=F, sep="\t", quote=FALSE)
+
+so <- sleuth_wt(so, which_beta = 'conditionPU.1[155-/155-]')
+tissue.res <- sleuth_results(so, 'conditionPU.1[155-/155-]')
+rm(tissue.test)
+
+bySignif <- tissue.res[order(log2(tissue.res$qval) * sign(tissue.res$b)), ] %>%
+  dplyr::select(target_id, b, qval)
+write.table(bySignif, file = gzfile("../output/DE/sleuth/PU.1.tsv.gz"),
+            row.names=F, col.names=F, sep="\t", quote=FALSE)
+
+# sleuth_live(gso)
+```
+
+### Tximport-edgeR
+```{r}
+library("tximport")
+library("edgeR")
+
+tx2gene = read.table("../data/transcriptomes/pcMus_musculus.GRCm38.88.transcript_ensgene_3len_longest.tsv",
+                    header=F, sep="\t", as.is = T)[, 1:2]
+sample_id <- dir(file.path("../output/counts/kallisto/SRP047132/"))
+files <- file.path("../output/counts/kallisto/SRP047132/", sample_id, "abundance.h5")
+names(files) <- sample_id
+
+txi.kallisto <- tximport(files, type = "kallisto", txOut = T, tx2gene = tx2gene)
+sampleInfo <- read.table("../data/metadata/SRP047132_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo <- sampleInfo[match(names(files), sampleInfo$Run_s), c("Run_s", "genotype_s", "source_name_s")]
+sampleInfo$genotype_s <- relevel(factor(sampleInfo$genotype_s), ref="Wild type")
+design <- model.matrix(~0+genotype_s, data=sampleInfo)
+
+cts <- txi.kallisto$counts
+normMat <- txi.kallisto$length
+normMat <- normMat/exp(rowMeans(log(normMat)))
+o <- log(calcNormFactors(cts/normMat)) + log(colSums(cts/normMat))
+y <- DGEList(cts)
+y$offset <- t(t(log(normMat)) + o)
+
+
+sy <- estimateDisp(y, design)
+fit <- glmFit(y, design, sy$tagwise.dispersion)
+
+summary(decideTestsDGE(glmLRT(fit, contrast = c(-0.5, 1, -0.5)), adjust.method="BH", p.value=0.05)) #544 down, 733 up at transcript level
+
+toSyl <- topTags(glmLRT(fit, contrast = c(0.5, -1, 0.5)), n = nrow(cts))$table
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+write.table(bySignif, file = gzfile("../output/DE/edgeR/txImpSRP047132_155KOvsMean.tsv.gz"),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+
+design <- model.matrix(~genotype_s, data=sampleInfo)
+sy <- estimateDisp(y, design)
+fit <- glmFit(y, design, sy$tagwise.dispersion)
+
+toSyl <- topTags(glmLRT(fit, coef = 3), n = nrow(cts))$table
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+write.table(bySignif, file = gzfile("../output/DE/edgeR/txImpSRP047132.tsv.gz"),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+
+toSyl <- topTags(glmLRT(fit, coef = 2), n = nrow(cts))$table
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+write.table(bySignif, file = gzfile("../output/DE/edgeR/txImpPU.1.tsv.gz"),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+```
+
+```{bash}
+cd /mnt/storage/testKal/
+
+rm -f output/sylamer/*
+
+for contr in $(find output/DE/ -name "*tsv.gz"); do
+  fName=$(basename $contr)
+  cName=${fName%.tsv.gz}
+  pDir=$(dirname $contr)
+  mthd=$(basename $pDir)
+  sylamer -fasta data/transcriptomes/pcMus_musculus.GRCm38.88.3utrs.fa -k 7 \
+    -o output/sylamer/${cName}_${mthd}.Syl.tsv \
+    -m 4 -words data/sylSeeds/TSMouse.7 \
+    -universe $contr -grow-times 20 -v 0 >& temp
+done
+  
+gzip output/sylamer/*.Syl.tsv
+```
+
+
+```{r}
+# very basic plotting script
+library(gplots)
+
+## add 3 top miRs, with word and name, colors. Named can be in dotted red on top.
+topN <- 5
+
+seedFile <- "../data/sylSeeds/TSMouse.7"
+
+
+seedTab  <- read.table(seedFile, row.names=1, as.is=TRUE)
+# seedTab  <- seedTab[seedTab[,1] != "mml-miR-124a",,drop=FALSE]
+
+inFiles <- list.files("../output/sylamer/", ".+Syl.tsv.gz", full.names=TRUE, recursive=TRUE)
+
+for (inFile in inFiles) {
+   outFile <- sub(".tsv.gz$",".png",inFile)
+   if (file.exists(outFile)) {
+      next
+   }
+   print(inFile)
+   # path <- sub("^.+?\\/","",dirname(inFile))
+   word <- "AGCATTA"
+   # if (regexpr("\\.7$", seedFile) > 0) {
+   #    word <- substr(word, 1, 7)
+   # }
+   # mir  <- seedTab[word,1]
+   contrst <- sub("(.+).Syl.tsv.gz", "\\1", basename(inFile))
+   tab <- cbind(0,read.table(inFile, header=TRUE, row.names=1, check.names=FALSE))
+   tab <- tab[rownames(tab) %in% rownames(seedTab),]
+   xvals <- as.numeric(colnames(tab))
+   # sort tab
+   tab <- tab[order(apply(tab, 1, max), decreasing=TRUE),]
+   
+   png(filename=outFile, width=640, height=480)
+   plot(NULL, xlim=range(xvals), ylim=c(min(-10,min(tab)), max(30, max(tab))),
+        xlab="", ylab="syl-P", main=paste(contrst, sep=""))
+   cols <- rich.colors(topN+2)
+   for (i in rev(seq_len(nrow(tab)))) {
+      col <- ifelse(i <= topN, cols[i], "grey")
+      lwd <- ifelse(i <= topN, 2, 1)
+      lines(xvals, tab[i,], col=col, lwd=lwd)
+   }
+   lines(xvals, tab[word,], col="red", lty=3, lwd=2)
+   abline(h=0)
+   words <- rownames(tab)[seq_len(topN)]
+   mirs  <- seedTab[words,1]
+   legend("bottomright", legend=paste(words, mirs), lty=1, lwd=2, col=cols[seq_len(topN)], bty="n")
+   dev.off()
+}
+```
+
+
+
+
+## SRP047132
+
+```{r}
+library("edgeR")
+library("dplyr")
+library("cowplot")
+library("mixOmics")
+
+# https://trace.ncbi.nlm.nih.gov/Traces/study/?acc=SRP102517
+sampleInfo <- read.table("../data/metadata/SRP102517_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo$mir122_status_s <- relevel(factor(sampleInfo$mir122_status_s), ref="WT")
+design <- model.matrix(~mir122_status_s + Sex_s, data=sampleInfo)
+
+gDict <- read.table("../data/transcriptomes/pcMus_trans_gene.tsv",
+                    header=F, sep="\t", as.is = T)
+
+rawCountTable <- read.table("../output/counts/featureCounts/SRP102517/SRP102517.counts.tsv", header=TRUE, sep="\t", row.names=1)[, -c(1:5), drop = F]
+colnames(rawCountTable) <- sub("(.+).sorted.bam", "\\1", colnames(rawCountTable))
+
+rawCountTable <- rawCountTable[, colnames(rawCountTable) %in% sampleInfo$Run_s]
+ 
+raw.pca<- pca(t(as.matrix(rawCountTable)), ncomp = 3, scale = FALSE)
+plotIndiv(raw.pca, group= sampleInfo$mir122_status_s, pch = sampleInfo$Sex_s,
+          legend = TRUE, title = 'Raw counts')
+
+
+dgeFull <- DGEList(counts = rawCountTable, group = sampleInfo$mir122_status_s)
+dgeFull <- calcNormFactors(dgeFull)
+sy <- estimateDisp(dgeFull, design)
+fit <- glmFit(sy, design)
+
+toSyl <- topTags(glmLRT(fit, contrast = c(0, 1, 0)), n = nrow(rawCountTable))$table
+toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+outFile <- "../output/DE/edgeR/SRP102517_sexCor_KO122.tsv.gz"
+write.table(bySignif, file = gzfile(outFile),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+
+
+v <- voom(sy, design, plot=T)
+plotMDS(v$E, labels=sampleInfo$Run_s, col=as.numeric(factor(sampleInfo$mir122_status_s)), main="MDS plot with weights")
+plotMDS(v$E, labels=sampleInfo$Run_s, col=as.numeric(factor(sampleInfo$Sex_s)), main="MDS plot with weights")
+# contrast.matrix <- makeContrasts(mir122_status_sWT-mir122_status_sKO, levels=design)
+fit <- lmFit(v, design)
+# fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit)
+
+summary(decideTests(fit))
+toSyl <- topTable(fit2, coef = 1, n = Inf)
+
+toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+bySignif <- toSyl[order(log2(toSyl$adj.P.Val) * sign(toSyl$logFC)), ]
+outFile <- "../output/DE/limma-voom/SRP102517_sexCor_KO122.tsv.gz"
+write.table(bySignif, file = gzfile(outFile),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+```
+
+### Sleuth
+```{r}
+library("sleuth")
+
+
+sampleInfo <- read.table("../data/metadata/SRP047132_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo$mir122_status_s <- relevel(factor(sampleInfo$mir122_status_s), ref="WT")
+design <- model.matrix(~mir122_status_s + Sex_s, data=sampleInfo)
+
+gDict <- read.table("../data/transcriptomes/pcMus_trans_gene.tsv",
+                    header=F, sep="\t", as.is = T)
+
+kal_dirs <- list.dirs("../output/counts/cKallisto/SRP047132/", recursive = F, full.names = T)
+sample_id <- basename(kal_dirs)
+
+s2c <- read.table("../data/metadata/SRP047132_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+s2c <- dplyr::select(s2c, sample = Run_s, condition = genotype_s) %>%
+  dplyr::mutate(path = kal_dirs, condition = relevel(factor(condition), ref="Wild type"))
+
+t2g <- read.table("../data/transcriptomes/pcMus_trans_gene.tsv", header=F, sep="\t", as.is = T) %>%
+  dplyr::rename(target_id = V1, ens_gene = V2)
+
+so <- sleuth_prep(s2c, target_mapping = t2g,
+                  extra_bootstrap_summary = TRUE)
+
+# plot_pca(so, color_by = 'condition', text_labels = TRUE)
+
+so <- sleuth_fit(so, ~condition, 'full')
+so <- sleuth_wt(so, which_beta = 'conditionmiR-155[-/-]')
+m155KO.res <- sleuth_results(so, 'conditionmiR-155[-/-]', show_all = F)
+
+bySignif <- m155KO.res[order(log2(m155KO.res$qval) * sign(m155KO.res$b)), ] %>%
+  dplyr::mutate(target_id = sub("(.+)\\..+", "\\1", target_id)) %>%
+  dplyr::select(target_id, b, qval)
+write.table(bySignif, file = gzfile("../output/DE/sleuth/tSRP047132_miR155.tsv.gz"),
+            row.names=F, col.names=F, sep="\t", quote=FALSE)
+
+# Gene level
+gso <- sleuth_prep(s2c, target_mapping = t2g,
+  aggregation_column = 'ens_gene', extra_bootstrap_summary = TRUE)
+
+gso <- sleuth_fit(gso, ~condition, 'full')
+gso <- sleuth_wt(gso, which_beta = 'conditionmiR-155[-/-]')
+gm155KO.res <- sleuth_results(gso, 'conditionmiR-155[-/-]', show_all = F)
+
+bySignif <- gm155KO.res[order(log2(gm155KO.res$qval) * sign(gm155KO.res$b)), ] %>%
+  dplyr::mutate(target_id = gDict[match(target_id, gDict$V2), 1]) %>%
+  dplyr::select(target_id, b, qval)
+
+outFile <- "../output/DE/sleuth/gSRP047132_miR155KO.tsv.gz"
+write.table(bySignif, file = gzfile(outFile),
+            row.names=F, col.names=F, sep="\t", quote=FALSE)
+```
+
+### tximport
+```{r}
+library("tximport")
+library("edgeR")
+library("dplyr")
+
+sampleInfo <- read.table("../data/metadata/SRP047132_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo$condition <- relevel(factor(sampleInfo$genotype_s), ref="Wild type")
+design <- model.matrix(~condition, data=sampleInfo)
+
+gDict <- read.table("../data/transcriptomes/pcMus_trans_gene.tsv",
+                    header=F, sep="\t", as.is = T)
+tx2gene <- gDict
+
+files <- file.path("../output/counts/cKallisto/SRP047132/", sampleInfo$Run_s, "abundance.h5")
+names(files) <- sampleInfo$Run_s
+txi.kallisto <- tximport(files, type = "kallisto", txOut = F, tx2gene = tx2gene)
+
+
+# Comparable to kallisto filter
+gkal <- read.table(list.files("../output/DE/sleuth/", pattern = "gSRP047132.+", full.names = T)[1], header=F, sep="\t", as.is = T)
+kalAccp <- rownames(txi.kallisto$counts) %in% tx2gene[match(gkal$V1, tx2gene$V1), 2]
+cts <- txi.kallisto$counts[kalAccp, ]
+normMat <- txi.kallisto$length[kalAccp, ]
+normMat <- normMat/exp(rowMeans(log(normMat)))
+o <- log(calcNormFactors(cts/normMat)) + log(colSums(cts/normMat))
+y <- DGEList(cts)
+y$offset <- t(t(log(normMat)) + o)
+
+
+sy <- estimateDisp(y, design)
+fit <- glmFit(y, design, sy$tagwise.dispersion)
+
+toSyl <- topTags(glmLRT(fit, coef = 2), n = nrow(cts))$table
+toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+outFile <- paste("../output/DE/edgeR/gtximpFilt_SRP047132_miR155KO.tsv.gz", sep = "")
+write.table(bySignif, file = gzfile(outFile),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+
+# Now at transcript level_filtered
+tkal <- read.table(list.files("../output/DE/sleuth/", pattern = "tSRP047132.+", full.names = T)[1], header=F, sep="\t", as.is = T)
+files <- file.path("../output/counts/cKallisto/SRP047132/", sampleInfo$Run_s, "abundance.h5")
+names(files) <- sampleInfo$Run_s
+txi.kallisto <- tximport(files, type = "kallisto", txOut = TRUE)
+
+kalAccp <- rownames(txi.kallisto$counts) %in% tkal$V1
+cts <- txi.kallisto$counts[kalAccp, ]
+normMat <- txi.kallisto$length[kalAccp, ]
+normMat <- normMat/exp(rowMeans(log(normMat)))
+o <- log(calcNormFactors(cts/normMat)) + log(colSums(cts/normMat))
+y <- DGEList(cts)
+y$offset <- t(t(log(normMat)) + o)
+
+
+sy <- estimateDisp(y, design)
+fit <- glmFit(y, design, sy$tagwise.dispersion)
+
+toSyl <- topTags(glmLRT(fit, coef = 2), n = nrow(cts))$table
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+outFile <- paste("../output/DE/edgeR/tximpFilt_SRP047132_miR155KO.tsv.gz", sep = "")
+write.table(bySignif, file = gzfile(outFile),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+```
+
+### StringTie EdgeR
+```{r}
+library("edgeR")
+library("dplyr")
+library("cowplot")
+library("mixOmics")
+
+sampleInfo <- read.table("../data/metadata/SRP047132_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo$condition <- relevel(factor(sampleInfo$genotype_s), ref="Wild type")
+design <- model.matrix(~condition, data=sampleInfo)
+
+gDict <- read.table("../data/transcriptomes/pcMus_trans_gene.tsv",
+                    header=F, sep="\t", as.is = T)
+
+gkal <- read.table(list.files("../output/DE/sleuth/", pattern = "gSRP047132.+", full.names = T)[1], header=F, sep="\t", as.is = T)
+
+rawCountTable <- read.table("../output/counts/stringtie/SRP047132/gene_count_matrix.csv", header=TRUE, sep=",", row.names=1)
+
+rawCountTable <- rawCountTable[rownames(rawCountTable) %in% gDict[match(gkal$V1, gDict$V1), 2],
+                               colnames(rawCountTable) %in% sampleInfo$Run_s]
+ 
+raw.pca<- pca(t(as.matrix(rawCountTable)), ncomp = 3, scale = FALSE)
+plotIndiv(raw.pca, group= sampleInfo$condition,
+          legend = TRUE, title = 'Raw counts')
+
+
+dgeFull <- DGEList(counts = rawCountTable, group = sampleInfo$condition)
+dgeFull <- calcNormFactors(dgeFull)
+sy <- estimateDisp(dgeFull, design)
+fit <- glmFit(sy, design)
+
+toSyl <- topTags(glmLRT(fit, coef = 2), n = nrow(rawCountTable))$table
+toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+outFile <- paste("../output/DE/edgeR/gstt_SRP047132_miR155KO.tsv.gz", sep = "")
+write.table(bySignif, file = gzfile(outFile),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+
+
+# Now at transcript level
+tkal <- read.table(list.files("../output/DE/sleuth/", pattern = "tSRP047132.+", full.names = T)[1], header=F, sep="\t", as.is = T)
+rawCountTable <- read.table("../output/counts/stringtie/SRP047132/transcript_count_matrix.csv", header=TRUE, sep=",", row.names=1)
+
+
+rawCountTable <- rawCountTable[rownames(rawCountTable) %in% tkal$V1,
+                               colnames(rawCountTable) %in% sampleInfo$Run_s]
+ 
+raw.pca<- pca(t(as.matrix(rawCountTable)), ncomp = 3, scale = FALSE)
+plotIndiv(raw.pca, group= sampleInfo$condition,
+          legend = TRUE, title = 'Raw counts')
+
+
+dgeFull <- DGEList(counts = rawCountTable, group = sampleInfo$mir122_status_s)
+dgeFull <- calcNormFactors(dgeFull)
+sy <- estimateDisp(dgeFull, design)
+fit <- glmFit(sy, design)
+
+toSyl <- topTags(glmLRT(fit, coef = 2), n = nrow(rawCountTable))$table
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+outFile <- paste("../output/DE/edgeR/tsttFilt_SRP047132_miR155KO.tsv.gz", sep = "")
+write.table(bySignif, file = gzfile(outFile),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+```
+
+
+
+```{r}
+library("edgeR")
+library("dplyr")
+library("cowplot")
+
+gDict <- read.table("../data/enstranscript_ensgene_3len.txt", header=F, sep="\t")
+rawCountTable <- read.table("../output/counts/featCounts/SRP047132.counts", header=TRUE, sep="\t", row.names=1)[, -c(1:5)]
+colnames(rawCountTable) <- sub("output.hisat2.(.+).sorted.bam", "\\1", colnames(rawCountTable))
+
+# Downloaded this information from:
+# https://trace.ncbi.nlm.nih.gov/Traces/study/?acc=SRP047132
+sampleInfo <- read.table("../data/metadata/SRP047132_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo <- sampleInfo[match(colnames(rawCountTable), sampleInfo$Run_s), c("Run_s", "genotype_s", "source_name_s")]
+rownames(sampleInfo) <- colnames(rawCountTable)
+
+sampleInfo$genotype_s <- relevel(factor(sampleInfo$genotype_s), ref="Wild type")
+design <- model.matrix(~genotype_s, data=sampleInfo)
+colnames(design) <- c("(Intercept)", "miR-155KO", "PU.1mut")
+
+# colnames(design) <- levels(pData(dataOffset)[, 1])
+dgeFull <- DGEList(counts = rawCountTable, group = sampleInfo$genotype_s)
+sy <- estimateDisp(dgeFull, design)
+
+v <- voom(sy, design, plot=TRUE)
+
+fit <- lmFit(v, design)
+fit <- eBayes(fit)
+
+summary(decideTests(fit)) #~3414 down, ~4607 up for m155KO
+# ~1290 down, ~1844 up for PU.1mut
+
+
+toSyl <- topTable(fit, coef = 2, n = Inf)
+rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+bySignif <- toSyl[order(log2(toSyl$adj.P.Val) * sign(toSyl$logFC)), ]
+
+write.table(bySignif, file = gzfile("../output/DE/limma-voom/SRP047132.tsv.gz"),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+```
+
+### Direct import
+```{r}
+library("edgeR")
+library("dplyr")
+
+fullDict <- read.table("../data/lens.txt", header=F, sep="\t")
+kal_tsvs <- list.files("../output/counts/kallisto/SRP047132", pattern = ".+tsv", recursive = T, full.names = T)
+ksamp <- read.table(kal_tsvs[1], header=T, sep="\t", as.is = T)
+mCounts <- data.frame(row.names = ksamp$target_id)
+
+for(samp in kal_tsvs){
+  ksamp <- read.table(samp, header=T, sep="\t", as.is = T)
+  mCounts <- cbind(mCounts, ksamp$est_counts)
+}
+
+colnames(mCounts) <- c(sub(".+/(.+)/[^/]+", "\\1", kal_tsvs))
+
+sampleInfo <- read.table("../data/metadata/SRP047132_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo <- sampleInfo[match(names(files), sampleInfo$Run_s), c("Run_s", "genotype_s", "source_name_s")]
+sampleInfo$genotype_s <- relevel(factor(sampleInfo$genotype_s), ref="Wild type")
+design <- model.matrix(~genotype_s, data=sampleInfo)
+
+keep <- rowSums(cpm(mCounts)>1) >= 3
+y <- DGEList(mCounts[keep, ])
+
+sy <- estimateDisp(y, design)
+fit <- glmFit(sy, design)
+
+toSyl <- topTags(glmLRT(fit, coef = 2), n = sum(keep))$table
+rownames(toSyl) <- sub("(.+)\\..+", "\\1", rownames(toSyl))
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+write.table(bySignif, file = gzfile("../output/DE/edgeR/kallistoDirctSRP047132.tsv.gz"),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+
+bySignif <- bySignif[!duplicated(fullDict$V1[match(rownames(bySignif), fullDict$V2)]), ]
+write.table(bySignif, file = gzfile("../output/DE/edgeR/O1kallistoDirctSRP047132.tsv.gz"),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+
+keep <- sub("(.+)\\..+", "\\1", rownames(mCounts)) %in% rownames(bySignif)
+y <- DGEList(mCounts[keep, ])
+
+sy <- estimateDisp(y, design)
+fit <- glmFit(sy, design)
+
+toSyl <- topTags(glmLRT(fit, coef = 2), n = sum(keep))$table
+rownames(toSyl) <- sub("(.+)\\..+", "\\1", rownames(toSyl))
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+write.table(bySignif, file = gzfile("../output/DE/edgeR/BO1kallistoDirctSRP047132.tsv.gz"),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+```
+
+
+
+```{r}
+library("edgeR")
+library("dplyr")
+library("cowplot")
+
+gDict <- read.table("../data/enstranscript_ensgene_3len.txt", header=F, sep="\t")
+rawCountTable <- read.table("../output/counts/featCounts/SRP047132.counts", header=TRUE, sep="\t", row.names=1)[, -c(1:5)]
+colnames(rawCountTable) <- sub("output.hisat2.(.+).sorted.bam", "\\1", colnames(rawCountTable))
+
+# Downloaded this information from:
+# https://trace.ncbi.nlm.nih.gov/Traces/study/?acc=SRP047132
+sampleInfo <- read.table("../data/metadata/SRP047132_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo <- sampleInfo[match(colnames(rawCountTable), sampleInfo$Run_s), c("Run_s", "genotype_s", "source_name_s")]
+rownames(sampleInfo) <- colnames(rawCountTable)
+
+sampleInfo$genotype_s <- relevel(factor(sampleInfo$genotype_s), ref="Wild type")
+design <- model.matrix(~genotype_s, data=sampleInfo)
+colnames(design) <- c("(Intercept)", "miR-155KO", "PU.1mut")
+
+# colnames(design) <- levels(pData(dataOffset)[, 1])
+dgeFull <- DGEList(counts = rawCountTable, group = sampleInfo$genotype_s)
+sy <- estimateDisp(dgeFull, design)
+
+v <- voom(sy, design, plot=TRUE)
+
+fit <- lmFit(v, design)
+fit <- eBayes(fit)
+
+summary(decideTests(fit)) #~3414 down, ~4607 up for m155KO
+# ~1290 down, ~1844 up for PU.1mut
+
+
+toSyl <- topTable(fit, coef = 2, n = Inf)
+rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+bySignif <- toSyl[order(log2(toSyl$adj.P.Val) * sign(toSyl$logFC)), ]
+
+write.table(bySignif, file = gzfile("../output/DE/limma-voom/SRP047132.tsv.gz"),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+```
+
+
+```{r}
+library("edgeR")
+library("dplyr")
+library("cowplot")
+
+gDict <- read.table("../data/enstranscript_ensgene_3len.txt", header=F, sep="\t")
+rawCountTable <- read.table("../output/counts/featCounts/SRP047132.counts", header=TRUE, sep="\t", row.names=1)[, -c(1:5)]
+colnames(rawCountTable) <- sub("output.hisat2.(.+).sorted.bam", "\\1", colnames(rawCountTable))
+
+# Downloaded this information from:
+# https://trace.ncbi.nlm.nih.gov/Traces/study/?acc=SRP047132
+sampleInfo <- read.table("../data/metadata/SRP047132_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo <- sampleInfo[match(colnames(rawCountTable), sampleInfo$Run_s), c("Run_s", "genotype_s", "source_name_s")]
+rownames(sampleInfo) <- colnames(rawCountTable)
+
+sampleInfo$genotype_s <- relevel(factor(sampleInfo$genotype_s), ref="Wild type")
+design <- model.matrix(~genotype_s, data=sampleInfo)
+colnames(design) <- c("(Intercept)", "miR-155KO", "PU.1mut")
+
+# colnames(design) <- levels(pData(dataOffset)[, 1])
+dgeFull <- DGEList(counts = rawCountTable, group = sampleInfo$genotype_s)
+sy <- estimateDisp(dgeFull, design)
+
+fit <- glmFit(sy, design)
+
+toSyl <- topTags(glmLRT(fit, coef = 2), n = nrow(dgeFull))$table
+rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+write.table(bySignif, file = gzfile("../output/DE/edgeR/SRP047132.tsv.gz"),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+
+keep <- rowSums(cpm(rawCountTable)>1) >= 3
+y <- DGEList(rawCountTable[keep, ])
+
+sy <- estimateDisp(y, design)
+
+fit <- glmFit(sy, design)
+
+toSyl <- topTags(glmLRT(fit, coef = 2), n = nrow(y))$table
+rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+write.table(bySignif, file = gzfile("../output/DE/edgeR/lfiltSRP047132.tsv.gz"),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+```
+
+```{r}
+library("sleuth")
+
+gDict <- read.table("../data/enstranscript_ensgene_3len.txt", header=F, sep="\t")
+sample_id <- dir(file.path("../output/counts/kallisto/", "SRP047132"))
+kal_dirs <- file.path("../output/counts/kallisto/", "SRP047132", sample_id)
+# Downloaded this information from:
+# https://trace.ncbi.nlm.nih.gov/Traces/study/?acc=SRP047132
+s2c <- read.table("../data/metadata/SRP047132_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+s2c <- dplyr::select(s2c, sample = Run_s, condition = genotype_s) %>%
+  dplyr::mutate(path = kal_dirs, condition = relevel(factor(condition), ref="Wild type"))
+
+t2g <- read.table("../data/gdicts/ensMustid_gid_extNam.tsv", header=F, sep="\t", as.is = T) %>%
+  dplyr::rename(target_id = V1, ens_gene = V2) %>%
+  dplyr::select(-V3)
+
+so <- sleuth_prep(s2c, target_mapping = t2g,
+                  extra_bootstrap_summary = TRUE)
+
+# plot_pca(so, color_by = 'condition', text_labels = TRUE)
+
+so <- sleuth_fit(so, ~condition, 'full')
+m155KO.test <- sleuth_wt(so1, which_beta = 'conditionmiR-155[-/-]')
+m155KO.res <- sleuth_results(m155KO.test, 'conditionmiR-155[-/-]')
+
+bySignif <- m155KO.res[order(log2(m155KO.res$qval) * sign(m155KO.res$b)), ] %>%
+  dplyr::mutate(target_id = sub("(.+)\\..+", "\\1", target_id)) %>%
+  # filter(!duplicated(ens_gene)) %>%
+  dplyr::select(target_id, b, qval)
+write.table(bySignif, file = gzfile("../output/DE/sleuth/tSRP047132.tsv.gz"),
+            row.names=F, col.names=F, sep="\t", quote=FALSE)
+
+sleuth_live(m155KO.test)
+# Gene level
+gso <- sleuth_prep(s2c, target_mapping = t2g,
+  aggregation_column = 'ens_gene', extra_bootstrap_summary = TRUE)
+
+gso <- sleuth_fit(gso, ~condition, 'full')
+gm155KO.test <- sleuth_wt(gso, which_beta = 'conditionmiR-155[-/-]')
+gm155KO.res <- sleuth_results(gm155KO.test, 'conditionmiR-155[-/-]')
+
+bySignif <- gm155KO.res[order(log2(gm155KO.res$qval) * sign(gm155KO.res$b)), ] %>%
+  dplyr::mutate(target_id = gDict[match(target_id, gDict$V2), 1]) %>%
+  dplyr::select(target_id, b, qval)
+
+write.table(bySignif, file = gzfile("../output/DE/sleuth/gSRP047132.tsv.gz"),
+            row.names=F, col.names=F, sep="\t", quote=FALSE)
+```
+
+### Sylamer
+```{bash sylamer}
+cd /storage/testKal
+rm output/sylamer/*
+
+for contr in $(find output/DE/ -name "*tsv.gz"); do
+  fName=$(basename $contr)
+  cName=${fName%.tsv.gz}
+  pDir=$(dirname $contr)
+  mthd=$(basename $pDir)
+  sylamer -fasta data/utrs/ENSMUS_TRANS_3UTR.dusted.tID.fa -k 7 \
+    -o output/sylamer/${cName}_${mthd}.Syl.tsv \
+    -m 4 -words data/seeds/TSMouse.7 \
+    -universe $contr -grow-times 20 -v 0 >& temp
+done
+  
+gzip output/sylamer/*.Syl.tsv
+```
+
+
+## SRP102517
+
+### EdgeR and voom
+
+```{r}
+library("edgeR")
+library("dplyr")
+library("cowplot")
+library("mixOmics")
+
+# https://trace.ncbi.nlm.nih.gov/Traces/study/?acc=SRP102517
+sampleInfo <- read.table("../data/metadata/SRP102517_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo$mir122_status_s <- relevel(factor(sampleInfo$mir122_status_s), ref="WT")
+design <- model.matrix(~mir122_status_s + Sex_s, data=sampleInfo)
+
+gDict <- read.table("../data/transcriptomes/pcMus_trans_gene.tsv",
+                    header=F, sep="\t", as.is = T)
+
+rawCountTable <- read.table("../output/counts/featureCounts/SRP102517/SRP102517.counts.tsv", header=TRUE, sep="\t", row.names=1)[, -c(1:5), drop = F]
+colnames(rawCountTable) <- sub("(.+).sorted.bam", "\\1", colnames(rawCountTable))
+
+rawCountTable <- rawCountTable[, colnames(rawCountTable) %in% sampleInfo$Run_s]
+ 
+raw.pca<- pca(t(as.matrix(rawCountTable)), ncomp = 3, scale = FALSE)
+plotIndiv(raw.pca, group= sampleInfo$mir122_status_s, pch = sampleInfo$Sex_s,
+          legend = TRUE, title = 'Raw counts')
+
+
+dgeFull <- DGEList(counts = rawCountTable, group = sampleInfo$mir122_status_s)
+dgeFull <- calcNormFactors(dgeFull)
+sy <- estimateDisp(dgeFull, design)
+fit <- glmFit(sy, design)
+
+toSyl <- topTags(glmLRT(fit, contrast = c(0, 1, 0)), n = nrow(rawCountTable))$table
+toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+outFile <- "../output/DE/edgeR/SRP102517_sexCor_KO122.tsv.gz"
+write.table(bySignif, file = gzfile(outFile),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+
+
+v <- voom(sy, design, plot=T)
+plotMDS(v$E, labels=sampleInfo$Run_s, col=as.numeric(factor(sampleInfo$mir122_status_s)), main="MDS plot with weights")
+plotMDS(v$E, labels=sampleInfo$Run_s, col=as.numeric(factor(sampleInfo$Sex_s)), main="MDS plot with weights")
+# contrast.matrix <- makeContrasts(mir122_status_sWT-mir122_status_sKO, levels=design)
+fit <- lmFit(v, design)
+# fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit)
+
+summary(decideTests(fit))
+toSyl <- topTable(fit2, coef = 1, n = Inf)
+
+toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+bySignif <- toSyl[order(log2(toSyl$adj.P.Val) * sign(toSyl$logFC)), ]
+outFile <- "../output/DE/limma-voom/SRP102517_sexCor_KO122.tsv.gz"
+write.table(bySignif, file = gzfile(outFile),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+```
+
+### Sleuth
+```{r}
+library("sleuth")
+
+sampleInfo <- read.table("../data/metadata/SRP102517_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo$mir122_status_s <- relevel(factor(sampleInfo$mir122_status_s), ref="WT")
+design <- model.matrix(~mir122_status_s + Sex_s, data=sampleInfo)
+
+gDict <- read.table("../data/transcriptomes/pcMus_trans_gene.tsv",
+                    header=F, sep="\t", as.is = T)
+
+kal_dirs <- list.dirs("../output/counts/cKallisto/SRP102517/")
+sample_id <- basename(kal_dirs)
+
+s2c <- read.table("../data/metadata/SRP102517_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+kal_dirs <- kal_dirs[sample_id %in% s2c$Run_s]
+s2c <- dplyr::select(s2c, sample = Run_s, sex = Sex_s, miR122 = mir122_status_s) %>%
+  dplyr::mutate(path = kal_dirs, miR122 = relevel(factor(miR122), ref="WT"),
+                sex = relevel(factor(sex), ref="female"))
+
+
+t2g <- read.table("../data/transcriptomes/pcMus_trans_gene.tsv", header=F, sep="\t", as.is = T) %>%
+  dplyr::rename(target_id = V1, ens_gene = V2)
+
+so <- sleuth_prep(s2c, target_mapping = t2g,
+                  extra_bootstrap_summary = TRUE)
+
+# plot_pca(so, color_by = 'batch', text_labels = TRUE)
+
+
+so <- sleuth_fit(so, ~miR122+sex, 'full')
+design_matrix(so)
+so <- sleuth_wt(so, which_beta = 'miR122KO')
+
+cont.res <- sleuth_results(so, "miR122KO", show_all = F)
+bySignif <- cont.res[order(log2(cont.res$qval) * sign(cont.res$b)), ] %>%
+  dplyr::select(target_id, b, qval)
+outFile <- "../output/DE/sleuth/SRP102517_sex_miR122KO.tsv.gz"
+write.table(bySignif, file = gzfile(outFile),
+            row.names=F, col.names=F, sep="\t", quote=FALSE)
+
+
+# Gene level
+gso <- sleuth_prep(s2c, target_mapping = t2g,
+                   aggregation_column = 'ens_gene', extra_bootstrap_summary = TRUE)
+
+gso <- sleuth_fit(gso, ~miR122+sex, 'full')
+gso <- sleuth_wt(gso, which_beta = 'miR122KO')
+
+
+cont.res <- sleuth_results(gso, "miR122KO", show_all = F)
+bySignif <- cont.res[order(log2(cont.res$qval) * sign(cont.res$b)), ] %>%
+  dplyr::select(target_id, b, qval) %>%
+  dplyr::mutate(target_id = gDict[match(target_id, gDict$V2), 1])
+outFile <- paste("../output/DE/sleuth/gSRP102517_sex_miR122KO.tsv.gz", sep = "")
+write.table(bySignif, file = gzfile(outFile),
+            row.names=F, col.names=F, sep="\t", quote=FALSE)
+
+
+# Pseudoaligned against unique transcript per gene
+kal_dirs <- list.dirs("../output/counts/uKallisto/SRP102517/")
+s2c <- read.table("../data/metadata/SRP102517_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+kal_dirs <- kal_dirs[sample_id %in% s2c$Run_s]
+s2c <- dplyr::select(s2c, sample = Run_s, sex = Sex_s, miR122 = mir122_status_s) %>%
+  dplyr::mutate(path = kal_dirs, miR122 = relevel(factor(miR122), ref="WT"),
+                sex = relevel(factor(sex), ref="female"))
+
+so <- sleuth_prep(s2c, target_mapping = t2g,
+                  extra_bootstrap_summary = TRUE)
+
+so <- sleuth_fit(so, ~miR122+sex, 'full')
+so <- sleuth_wt(so, which_beta = 'miR122KO')
+
+cont.res <- sleuth_results(so, "miR122KO", show_all = F)
+bySignif <- cont.res[order(log2(cont.res$qval) * sign(cont.res$b)), ] %>%
+  dplyr::select(target_id, b, qval)
+outFile <- "../output/DE/sleuth/utSRP102517_sex_miR122KO.tsv.gz"
+write.table(bySignif, file = gzfile(outFile),
+            row.names=F, col.names=F, sep="\t", quote=FALSE)
+```
+
+### tximport
+```{r}
+library("tximport")
+library("edgeR")
+library("dplyr")
+
+sampleInfo <- read.table("../data/metadata/SRP102517_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo$mir122_status_s <- relevel(factor(sampleInfo$mir122_status_s), ref="WT")
+design <- model.matrix(~mir122_status_s + Sex_s, data=sampleInfo)
+
+gDict <- read.table("../data/transcriptomes/pcMus_trans_gene.tsv",
+                    header=F, sep="\t", as.is = T)
+                  
+
+tx2gene <- gDict
+
+files <- file.path("../output/counts/cKallisto/SRP102517/", sampleInfo$Run_s, "abundance.h5")
+names(files) <- sampleInfo$Run_s
+txi.kallisto <- tximport(files, type = "kallisto", txOut = F, tx2gene = tx2gene)
+
+cts <- txi.kallisto$counts
+normMat <- txi.kallisto$length
+normMat <- normMat/exp(rowMeans(log(normMat)))
+o <- log(calcNormFactors(cts/normMat)) + log(colSums(cts/normMat))
+y <- DGEList(cts)
+y$offset <- t(t(log(normMat)) + o)
+
+
+sy <- estimateDisp(y, design)
+fit <- glmFit(y, design, sy$tagwise.dispersion)
+
+toSyl <- topTags(glmLRT(fit, coef = 2), n = nrow(cts))$table
+toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+outFile <- paste("../output/DE/edgeR/gtximp_SRP102517_sex_miR122KO.tsv.gz", sep = "")
+write.table(bySignif, file = gzfile(outFile),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+
+
+# Comparable to kallisto filter
+gkal <- read.table(list.files("../output/DE/sleuth/", pattern = "gSRP102517.+", full.names = T)[1], header=F, sep="\t", as.is = T)
+kalAccp <- rownames(txi.kallisto$counts) %in% tx2gene[match(gkal$V1, tx2gene$target_id), 2]
+cts <- txi.kallisto$counts[kalAccp, ]
+normMat <- txi.kallisto$length[kalAccp, ]
+normMat <- normMat/exp(rowMeans(log(normMat)))
+o <- log(calcNormFactors(cts/normMat)) + log(colSums(cts/normMat))
+y <- DGEList(cts)
+y$offset <- t(t(log(normMat)) + o)
+
+
+sy <- estimateDisp(y, design)
+fit <- glmFit(y, design, sy$tagwise.dispersion)
+
+toSyl <- topTags(glmLRT(fit, coef = 2), n = nrow(cts))$table
+toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+outFile <- paste("../output/DE/edgeR/gtximpFilt_SRP102517_sex_miR122KO.tsv.gz", sep = "")
+write.table(bySignif, file = gzfile(outFile),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+
+# Now at transcript level_filtered
+tkal <- read.table(list.files("../output/DE/sleuth/", pattern = "utSRP102517.+", full.names = T)[1], header=F, sep="\t", as.is = T)
+files <- file.path("../output/counts/uKallisto/SRP102517/", sampleInfo$Run_s, "abundance.h5")
+names(files) <- sampleInfo$Run_s
+txi.kallisto <- tximport(files, type = "kallisto", txOut = TRUE)
+
+kalAccp <- rownames(txi.kallisto$counts) %in% tkal$V1
+cts <- txi.kallisto$counts[kalAccp, ]
+normMat <- txi.kallisto$length[kalAccp, ]
+normMat <- normMat/exp(rowMeans(log(normMat)))
+o <- log(calcNormFactors(cts/normMat)) + log(colSums(cts/normMat))
+y <- DGEList(cts)
+y$offset <- t(t(log(normMat)) + o)
+
+
+sy <- estimateDisp(y, design)
+fit <- glmFit(y, design, sy$tagwise.dispersion)
+
+toSyl <- topTags(glmLRT(fit, coef = 2), n = nrow(cts))$table
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+outFile <- paste("../output/DE/edgeR/utximpFilt_SRP102517_sex_miR122KO.tsv.gz", sep = "")
+write.table(bySignif, file = gzfile(outFile),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+```
+
+### StringTie EdgeR
+```{r}
+library("edgeR")
+library("dplyr")
+library("cowplot")
+library("mixOmics")
+
+sampleInfo <- read.table("../data/metadata/SRP102517_metadat.tsv", header=TRUE, sep="\t", as.is = T)
+sampleInfo$mir122_status_s <- relevel(factor(sampleInfo$mir122_status_s), ref="WT")
+design <- model.matrix(~mir122_status_s + Sex_s, data=sampleInfo)
+
+gDict <- read.table("../data/transcriptomes/pcMus_trans_gene.tsv",
+                    header=F, sep="\t", as.is = T)
+
+rawCountTable <- read.table("../output/counts/stringtie/SRP102517/gene_count_matrix.csv", header=TRUE, sep=",", row.names=1)
+
+rawCountTable <- rawCountTable[, colnames(rawCountTable) %in% sampleInfo$Run_s]
+ 
+raw.pca<- pca(t(as.matrix(rawCountTable)), ncomp = 3, scale = FALSE)
+plotIndiv(raw.pca, group= sampleInfo$mir122_status_s, pch = sampleInfo$Sex_s,
+          legend = TRUE, title = 'Raw counts')
+
+
+dgeFull <- DGEList(counts = rawCountTable, group = sampleInfo$mir122_status_s)
+dgeFull <- calcNormFactors(dgeFull)
+sy <- estimateDisp(dgeFull, design)
+fit <- glmFit(sy, design)
+
+toSyl <- topTags(glmLRT(fit, coef = 2), n = nrow(rawCountTable))$table
+toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+outFile <- paste("../output/DE/edgeR/gstt_SRP102517_sex_miR122KO.tsv.gz", sep = "")
+write.table(bySignif, file = gzfile(outFile),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+
+
+# Now at transcript level
+tkal <- read.table(list.files("../output/DE/sleuth/", pattern = "SRP102517.+", full.names = T)[1], header=F, sep="\t", as.is = T)
+rawCountTable <- read.table("../output/counts/stringtie/SRP102517/transcript_count_matrix.csv", header=TRUE, sep=",", row.names=1)
+
+dgeFull <- DGEList(counts = rawCountTable, group = sampleInfo$mir122_status_s)
+dgeFull <- calcNormFactors(dgeFull)
+sy <- estimateDisp(dgeFull, design)
+fit <- glmFit(sy, design)
+
+toSyl <- topTags(glmLRT(fit, coef = 2), n = nrow(rawCountTable))$table
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+outFile <- paste("../output/DE/edgeR/tstt_SRP102517_sex_miR122KO.tsv.gz", sep = "")
+write.table(bySignif, file = gzfile(outFile),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+
+
+rawCountTable <- rawCountTable[rownames(rawCountTable) %in% tkal$V1,
+                               colnames(rawCountTable) %in% sampleInfo$Run_s]
+ 
+raw.pca<- pca(t(as.matrix(rawCountTable)), ncomp = 3, scale = FALSE)
+plotIndiv(raw.pca, group= sampleInfo$mir122_status_s,
+          legend = TRUE, title = 'Raw counts')
+
+
+dgeFull <- DGEList(counts = rawCountTable, group = sampleInfo$mir122_status_s)
+dgeFull <- calcNormFactors(dgeFull)
+sy <- estimateDisp(dgeFull, design)
+fit <- glmFit(sy, design)
+
+toSyl <- topTags(glmLRT(fit, coef = 2), n = nrow(rawCountTable))$table
+bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+outFile <- paste("../output/DE/edgeR/tsttFilt_SRP102517_sex_miR122KO.tsv.gz", sep = "")
+write.table(bySignif, file = gzfile(outFile),
+            row.names=T, col.names=F, sep="\t", quote=FALSE)
+```
+
+### Sylamer
+```{bash sylamer}
+cd /storage/testKal
+rm output/sylamer/*
+
+for contr in $(find output/DE/ -name "*tsv.gz"); do
+  fName=$(basename $contr)
+  cName=${fName%.tsv.gz}
+  pDir=$(dirname $contr)
+  mthd=$(basename $pDir)
+  sylamer -fasta data/utrs/ENSMUS_TRANS_3UTR.dusted.tID.fa -k 7 \
+    -o output/sylamer/${cName}_${mthd}.Syl.tsv \
+    -m 4 -words data/seeds/TSMouse.7 \
+    -universe $contr -grow-times 20 -v 0 >& temp
+done
+  
+gzip output/sylamer/*.Syl.tsv
+```
+
+### Sylamer
+```{bash sylamer}
+cd /storage/testKal
+mkdir -p output/sylamer/SRP102517/
+rm -f output/sylamer/SRP102517/*
+
+for contr in $(find output/DE/ -name "*SRP102517*tsv.gz"); do
+  fName=$(basename $contr)
+  cName=${fName%.tsv.gz}
+  pDir=$(dirname $contr)
+  mthd=$(basename $pDir)
+  sylamer -fasta data/transcriptomes/pcMus_musculus.GRCm38.88.3utrs.fa -k 7 \
+    -o output/sylamer/SRP102517/${cName}_${mthd}.Syl.tsv \
+    -m 4 -words data/sylSeeds/TSMouse.7 \
+    -universe $contr -grow-times 20 -v 0 >& temp
+done
+  
+gzip output/sylamer/SRP102517/*.Syl.tsv
+```
+
+#### Visualize
+```{r}
+# very basic plotting script
+library(gplots)
+
+## add 3 top miRs, with word and name, colors. Named can be in dotted red on top.
+topN <- 3
+
+seedFile <- "../data/sylSeeds/TSMouse.7"
+
+
+seedTab  <- read.table(seedFile, row.names=1, as.is=TRUE)
+# seedTab  <- seedTab[seedTab[,1] != "mml-miR-124a",,drop=FALSE]
+
+inFiles <- list.files("../output/sylamer/", ".+Syl.tsv.gz", full.names=TRUE, recursive=TRUE)
+
+for (inFile in inFiles) {
+   outFile <- sub(".tsv.gz$",".png",inFile)
+   if (file.exists(outFile)) {
+      next
+   }
+   print(inFile)
+   # path <- sub("^.+?\\/","",dirname(inFile))
+   word <- "ACACTCC"
+   # if (regexpr("\\.7$", seedFile) > 0) {
+   #    word <- substr(word, 1, 7)
+   # }
+   # mir  <- seedTab[word,1]
+   contrst <- sub("(.+).Syl.tsv.gz", "\\1", basename(inFile))
+   mSign <- ifelse(grepl("voom", contrst), yes = -1, no = 1)
+   tab <- cbind(0,read.table(inFile, header=TRUE, row.names=1, check.names=FALSE) * mSign)
+   tab <- tab[rownames(tab) %in% rownames(seedTab),]
+   xvals <- as.numeric(colnames(tab))
+   # sort tab
+   tab <- tab[order(apply(tab, 1, max), decreasing=TRUE),]
+   
+   png(filename=outFile, width=640, height=480)
+   plot(NULL, xlim=range(xvals), ylim=c(min(-10,min(tab)), max(30, max(tab))),
+        xlab="", ylab="syl-P", main=paste(contrst, sep=""))
+   cols <- rich.colors(topN+2)
+   for (i in rev(seq_len(nrow(tab)))) {
+      col <- ifelse(i <= topN, cols[i], "grey")
+      lwd <- ifelse(i <= topN, 2, 1)
+      lines(xvals, tab[i,], col=col, lwd=lwd)
+   }
+   lines(xvals, tab[word,], col="red", lty=3, lwd=2)
+   abline(h=0)
+   words <- rownames(tab)[seq_len(topN)]
+   mirs  <- seedTab[words,1]
+   legend("bottomright", legend=paste(words, mirs), lty=1, lwd=2, col=cols[seq_len(topN)], bty="n")
+   dev.off()
+}
+```

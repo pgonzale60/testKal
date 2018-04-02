@@ -1,0 +1,1 @@
+This project aims to explore the differences in results between kallisto, HISAT2-stringTie and HISAT2-featureCounts. To do this, I use different datasets of altered miRNA expression. This data can also be used to explore the results of EISA.

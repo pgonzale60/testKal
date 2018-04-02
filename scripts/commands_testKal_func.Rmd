@@ -1,0 +1,552 @@
+---
+title: "commands_testKal_funcs"
+author: "pgonzale60"
+date: "30/6/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r edgeR template}
+source("sigDeStat.R")
+source("deEdgeR.R")
+source("delvoom.R")
+source("deSleuth.R")
+
+srp <- "SRP102517"
+colToRelevl <- 9
+ref <- "WT"
+toModMat <- "~mir122_status_s + Sex_s"
+titlNote <- "sexCor.KO122"
+molType <- "gene"
+quantSoft <- "kallisto"
+statSoft <- "sleuth"
+deCoeff <- 2
+slTest <- "mir122_status_sKO" # "conditionmiR-155[-/-]"
+dictF <- "../data/transcriptomes/pcMus_trans_gene.tsv"
+sleuthF <- ""
+
+for (molType in c("gene", "trans", "utrans")){
+  sigDeStat(srp, colToRelevl, ref, toModMat, titlNote, molType,
+                      quantSoft, statSoft, deCoeff, slTest,
+                      dictF, sleuthF)
+}
+
+sleuthF <- "../output/DE/gene/sleuth/kallisto_SRP102517_sexCor.KO122.tsv.gz"
+for (quantSoft in c("kallisto", "featureCounts", "stringtie")){
+  for(statSoft in c("edgeR", "limma-voom")){
+    sigDeStat(srp, colToRelevl, ref, toModMat, titlNote, molType,
+              quantSoft, statSoft, deCoeff, slTest,
+              dictF, sleuthF)
+  }
+}
+
+molType <- "trans"
+for (quantSoft in c("kallisto", "stringtie")){
+  for(statSoft in c("edgeR", "limma-voom")){
+    sigDeStat(srp, colToRelevl, ref, toModMat, titlNote, molType,
+              quantSoft, statSoft, deCoeff, slTest,
+              dictF, sleuthF)
+  }
+}
+
+molType <- "utrans"
+for (quantSoft in c("kallisto")){
+  for(statSoft in c("edgeR", "limma-voom")){
+    sigDeStat(srp, colToRelevl, ref, toModMat, titlNote, molType,
+              quantSoft, statSoft, deCoeff, slTest,
+              dictF, sleuthF)
+  }
+}
+
+srp <- "SRP047132"
+colToRelevl <- 8
+ref <- "Wild type"
+toModMat <- "~ genotype_s"
+titlNote <- "KO155.PU"
+molType <- "gene"
+quantSoft <- "kallisto"
+statSoft <- "sleuth"
+deCoeff <- 3
+slTest <- "genotype_smiR-155[-/-]"
+dictF <- "../data/transcriptomes/pcMus_trans_gene.tsv"
+sleuthF <- ""
+
+for (molType in c("gene", "trans", "utrans")){
+  sigDeStat(srp, colToRelevl, ref, toModMat, titlNote, molType,
+                      quantSoft, statSoft, deCoeff, slTest,
+                      dictF, sleuthF)
+}
+
+sleuthF <- "../output/DE/gene/sleuth/kallisto_SRP047132_KO155.PU.tsv.gz"
+for (quantSoft in c("kallisto", "featureCounts", "stringtie")){
+  for(statSoft in c("edgeR", "limma-voom")){
+    sigDeStat(srp, colToRelevl, ref, toModMat, titlNote, molType,
+              quantSoft, statSoft, deCoeff, slTest,
+              dictF, sleuthF)
+  }
+}
+
+molType <- "trans"
+for (quantSoft in c("kallisto", "stringtie")){
+  for(statSoft in c("edgeR", "limma-voom")){
+    sigDeStat(srp, colToRelevl, ref, toModMat, titlNote, molType,
+              quantSoft, statSoft, deCoeff, slTest,
+              dictF, sleuthF)
+  }
+}
+
+molType <- "utrans"
+for (quantSoft in c("kallisto")){
+  for(statSoft in c("edgeR", "limma-voom")){
+    sigDeStat(srp, colToRelevl, ref, toModMat, titlNote, molType,
+              quantSoft, statSoft, deCoeff, slTest,
+              dictF, sleuthF)
+  }
+}
+
+srp <- "SRP057986"
+colToRelevl <- 9
+ref <- "wild type"
+toModMat <- "~ genotype_s" #  + cell_type_s
+titlNote <- "KO155.SOCS"
+molType <- "gene"
+quantSoft <- "kallisto"
+statSoft <- "sleuth"
+deCoeff <- 3
+slTest <- "genotype_smiR-155 KO"
+dictF <- "../data/transcriptomes/pcMus_trans_gene.tsv"
+sleuthF <- ""
+
+for (molType in c("gene", "trans", "utrans")){
+  sigDeStat(srp, colToRelevl, ref, toModMat, titlNote, molType,
+                      quantSoft, statSoft, deCoeff, slTest,
+                      dictF, sleuthF)
+}
+
+sleuthF <- "../output/DE/gene/sleuth/kallisto_SRP057986_KO155.SOCS.tsv.gz"
+for (quantSoft in c("kallisto", "featureCounts", "stringtie")){
+  for(statSoft in c("edgeR", "limma-voom")){
+    sigDeStat(srp, colToRelevl, ref, toModMat, titlNote, molType,
+              quantSoft, statSoft, deCoeff, slTest,
+              dictF, sleuthF)
+  }
+}
+
+molType <- "trans"
+for (quantSoft in c("kallisto", "stringtie")){
+  for(statSoft in c("edgeR", "limma-voom")){
+    sigDeStat(srp, colToRelevl, ref, toModMat, titlNote, molType,
+              quantSoft, statSoft, deCoeff, slTest,
+              dictF, sleuthF)
+  }
+}
+
+molType <- "utrans"
+for (quantSoft in c("kallisto")){
+  for(statSoft in c("edgeR", "limma-voom")){
+    sigDeStat(srp, colToRelevl, ref, toModMat, titlNote, molType,
+              quantSoft, statSoft, deCoeff, slTest,
+              dictF, sleuthF)
+  }
+}
+```
+
+# Public Main
+```{r}
+sigDeStat <- function(srp, colToRelevl, ref, toModMat, titlNote, molType,
+                      quantSoft, statSoft, deCoeff, slTest,
+                      dictF = "../data/transcriptomes/pcMus_trans_gene.tsv",
+                      sleuthF){
+  library("edgeR")
+  library("tximport")
+  library("sleuth")
+  
+  
+  if(!(quantSoft %in% c("featureCounts", "kallisto", "stringtie"))){
+    message("Quantification software only allows: featureCounts, kallisto or stringtie")
+    stop()
+  }
+  
+  if(!(statSoft %in% c("edgeR", "sleuth", "limma-voom"))){
+    message("Quantification software only allows: edgeR, sleuth or limma-voom")
+    stop()
+  }
+  
+  if(!(molType %in% c("gene", "trans", "utrans"))){
+    message("Quantification software only allows: gene, trans or utrans")
+    stop()
+  }
+  
+  if(quantSoft == "featureCounts" & molType != "gene"){
+    message("featureCounts only works for gene counts")
+    stop()
+  }
+  
+  if(quantSoft == "stringtie" & molType == "utrans"){
+    message("stringtie did not estimated counts per representative transcript (utrans).")
+    stop()
+  }
+  
+  if(statSoft == "sleuth" & quantSoft != "kallisto"){
+    message("Sleuth only is compatible with kallisto results.")
+    stop()
+  }
+  
+  if(!file.exists(sleuthF) & statSoft != "sleuth"){
+    message("Sleuth result not found. Need this to filter any other strategy.")
+    stop()
+  }
+  
+  
+  # Read sample info
+  sampleInfo <- read.table(paste("../data/metadata/", srp, "_metadat.tsv", sep = ""), header=TRUE, sep="\t", as.is = T)
+  sampleInfo[, colToRelevl] <- relevel(factor(sampleInfo[, colToRelevl]), ref=ref)
+  
+  # Read dictionary
+  gDict <- read.table(dictF, header=F, sep="\t", as.is = T)
+  
+  
+  # Sleuth rutine
+  if(quantSoft == "kallisto" & statSoft == "sleuth"){
+    if(molType == "utrans")
+      kalT <- "uKallisto"
+    else
+      kalT <- "cKallisto"
+    
+    kal_dirs <- list.dirs(paste("../output/counts/", kalT, "/", srp, "/", sep = ""),
+                          recursive = F, full.names = T)
+    
+    deSleuth(gDict, kal_dirs, slTest, molType, titlNote, sampleInfo, toModMat)
+    
+  } else {
+    # Read sleuth accepted features
+    gKal <- read.table(sleuthF, header=F, sep="\t", as.is = T)
+    # And set dictionary according to molecule type
+    if(molType == "gene"){
+      kalGens <- unique(gDict[match(gKal$V1, gDict$V1), 2])
+    } else{
+      kalGens <- gKal$V1
+    }
+    
+    # Create design matrix
+    design <- model.matrix(eval(parse(text=toModMat)), data=sampleInfo)
+    
+    # Initialize empty variable which might be filled by tximport
+    normMat <- 0
+    
+    #### Read counts ####
+    
+    # From featureCounts
+    if(quantSoft == "featureCounts"){
+      rawCountTable <- read.table(paste("../output/counts/featureCounts/",
+                                        srp, "/", srp, ".counts.tsv",
+                                        sep = ""), header=TRUE, sep="\t",
+                                  row.names=1)[, -c(1:5), drop = F]
+      
+      colnames(rawCountTable) <- sub("(.+).sorted.bam", "\\1", colnames(rawCountTable))
+    }
+    
+    # From stringTie
+    if(quantSoft == "stringtie"){
+      if(molType == "gene")
+        stFile <- "gene_count_matrix.csv"
+      else
+        stFile <- "transcript_count_matrix.csv"
+      
+      rawCountTable <- read.table(paste("../output/counts/stringtie/",
+                                        srp, "/", stFile,
+                                        sep = ""), header=TRUE, sep=",",
+                                  row.names=1)
+    }
+    
+    # From kallisto
+    if(quantSoft == "kallisto" & statSoft != "sleuth"){
+      if(molType != "utrans")
+        kalT <- "cKallisto"
+      else
+        kalT <- "uKallisto"
+      
+      files <- file.path(paste("../output/counts/", kalT, "/", srp, "/", sep = ""), sampleInfo$Run_s, "abundance.h5")
+      names(files) <- sampleInfo$Run_s
+      
+      if(molType == "gene"){
+        txOut <- FALSE
+      }
+      else{
+        txOut <- TRUE
+      }
+      
+      
+      txi.kallisto <- tximport(files, type = "kallisto", txOut = txOut, tx2gene = gDict)
+      rawCountTable <- txi.kallisto$counts
+      normMat <- txi.kallisto$length[rownames(rawCountTable) %in% kalGens, ]
+    }
+    
+    # Filter only accepted features by Kallisto
+    kalAccp <- rownames(rawCountTable) %in% kalGens
+    rawCountTable <- rawCountTable[kalAccp, ]
+    
+    #### Statistical analyses ####
+    # EdgeR
+    if(statSoft == "edgeR"){
+      bySignif <- deEdgeR(gDict, rawCountTable, deCoeff, design, molType, quantSoft, normMat)
+    }
+    
+    # Limma-voom
+    if(statSoft == "limma-voom"){
+      bySignif <- delvoom(gDict, rawCountTable, deCoeff, design, molType, quantSoft, normMat)
+    }
+    
+    # Write results
+    outFile <- paste("../output/DE/", molType, "/", statSoft, "/", quantSoft, "_",
+                     srp, "_", titlNote, ".tsv.gz", sep = "")
+    write.table(bySignif, file = gzfile(outFile),
+                row.names=T, col.names=F, sep="\t", quote=FALSE)
+  }
+}
+```
+
+## edgeR function
+```{r}
+deEdgeR <- function(gDict, rawCountTable, deCoeff, design, molType, quantSoft, normMat){
+  if(quantSoft == "kallisto"){
+    normMat <- normMat/exp(rowMeans(log(normMat)))
+    o <- log(calcNormFactors((rawCountTable)/normMat)) + log(colSums((rawCountTable)/normMat))
+    y <- DGEList(rawCountTable)
+    y$offset <- t(t(log(normMat)) + o)
+    sy <- estimateDisp(y, design)
+    fit <- glmFit(y, design, sy$tagwise.dispersion)
+    
+  } else {
+    
+    y <- DGEList(counts = rawCountTable)
+    y <- calcNormFactors(y)
+    y <- estimateDisp(y, design)
+    fit <- glmFit(y, design)
+  }
+  
+  toSyl <- topTags(glmLRT(fit, coef = deCoeff), n = Inf)$table
+  if (molType == "gene"){
+    toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+    rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+  }
+  
+  bySignif <- toSyl[order(log2(toSyl$FDR) * sign(toSyl$logFC)), ]
+  return(bySignif)
+}
+```
+
+## voom function
+```{r}
+delvoom <- function(gDict, rawCountTable, deCoeff, design, molType, quantSoft, normMat){
+  if(quantSoft == "kallisto"){
+    normMat <- normMat/exp(rowMeans(log(normMat)))
+    o <- log(calcNormFactors((rawCountTable)/normMat)) + log(colSums((rawCountTable)/normMat))
+    y <- DGEList(rawCountTable)
+    y$offset <- t(t(log(normMat)) + o)
+  } else {
+    
+    y <- DGEList(counts = rawCountTable)
+    y <- calcNormFactors(y)
+  }
+  
+  v <- voom(y, design, plot = F)
+  vfit <- lmFit(v, design)
+  efit <- eBayes(vfit)
+  
+  toSyl <- topTable(efit, coef = deCoeff, n = Inf)
+  
+  if (molType == "gene"){
+    toSyl <- toSyl[rownames(toSyl) %in% gDict$V2, ]
+    rownames(toSyl) <- gDict[match(rownames(toSyl), gDict$V2), 1]
+  }
+  
+  bySignif <- toSyl[order(log2(toSyl$adj.P.Val) * sign(toSyl$logFC)), ]
+  return(bySignif)
+}
+```
+
+
+## Sleuth function
+```{r}
+deSleuth <- function(gDict, kal_dirs, slTest, molType, titlNote, sampleInfo, toModMat){
+  s2c <- dplyr::mutate(sampleInfo, sample = Run_s, path = kal_dirs)
+  
+  t2g <- dplyr::rename(gDict, target_id = V1, ens_gene = V2)
+  
+  if (molType == "gene"){
+    so <- sleuth_prep(s2c, target_mapping = t2g,
+                      aggregation_column = 'ens_gene',
+                      extra_bootstrap_summary = TRUE)
+    
+  } else {
+    so <- sleuth_prep(s2c, target_mapping = t2g,
+                      extra_bootstrap_summary = TRUE)
+  }
+  
+  
+  
+  
+  so <- sleuth_fit(so, eval(parse(text=toModMat)), 'full')
+  so <- sleuth_wt(so, which_beta = slTest)
+  cont.res <- sleuth_results(so, slTest, show_all = F)
+  
+  if (molType == "gene"){
+    bySignif <- cont.res[order(log2(cont.res$qval) * sign(cont.res$b)), ] %>%
+      dplyr::mutate(target_id = gDict[match(target_id, gDict$V2), 1]) %>%
+      dplyr::select(target_id, b, qval)
+    
+  } else {
+    bySignif <- cont.res[order(log2(cont.res$qval) * sign(cont.res$b)), ] %>%
+      dplyr::select(target_id, b, qval)
+  }
+  
+  outFile <- paste("../output/DE/", molType, "/sleuth/kallisto_",
+                   srp, "_", titlNote, ".tsv.gz", sep = "")
+  write.table(bySignif, file = gzfile(outFile),
+              row.names=F, col.names=F, sep="\t", quote=FALSE)
+}
+```
+
+
+# Sylamer
+```{bash sylamer}
+cd /storage/testKal
+mkdir -p output/sylamer/
+rm -f output/sylamer/*
+
+for contr in $(find output/DE/ -name "*tsv.gz"); do
+  fName=$(basename $contr)
+  cName=${fName%.tsv.gz}
+  pDir=$(dirname $contr)
+  mthd=$(basename $pDir)
+  ppDir=$(dirname $pDir)
+  molTyp=$(basename $ppDir)
+  sylamer -fasta data/transcriptomes/ENSMUS_TRANS_3UTR.dusted.codingEnsT.fa -k 7 \
+    -o output/sylamer/${molTyp}_${mthd}_${cName}.Syl.tsv \
+    -m 4 -words data/sylSeeds/TSMouse.7 \
+    -universe $contr -grow-times 20 -v 0 >& temp
+done
+  
+gzip output/sylamer/*.Syl.tsv
+```
+
+
+## Visualize
+```{r}
+# very basic plotting script
+library(gplots)
+library(reshape2)
+library(cowplot)
+
+## add 3 top miRs, with word and name, colors. Named can be in dotted red on top.
+topN <- 3
+
+seedFile <- "../data/sylSeeds/TSMouse.7"
+
+
+seedTab  <- read.table(seedFile, row.names=1, as.is=TRUE)
+# seedTab  <- seedTab[seedTab[,1] != "mml-miR-124a",,drop=FALSE]
+
+inFiles <- list.files("../output/sylamer/", "gene.+Syl.tsv.gz", full.names=TRUE, recursive=TRUE)
+
+gEnrich <- numeric()
+gMthd <- character()
+gQuant <- character()
+gExprmnt <- character()
+for (inFile in inFiles) {
+   print(inFile)
+   contrst <- sub("(.+).Syl.tsv.gz", "\\1", basename(inFile))
+   mthd <- sub("gene_([^_]+)_.+.Syl.tsv.gz", "\\1", basename(inFile))
+   quantAp <- sub("gene_[^_]+_([^_]+)_.+.Syl.tsv.gz", "\\1", basename(inFile))
+   exprmnt <- sub("gene_[^_]+_[^_]+_([^_]+)_.+.Syl.tsv.gz", "\\1", basename(inFile))
+   if(exprmnt == "SRP102517")
+     word <- "ACACTCC"
+   else
+     word <- "AGCATTA"
+   gMthd <- c(gMthd, mthd)
+   gQuant <- c(gQuant, quantAp)
+   gExprmnt <- c(gExprmnt, exprmnt)
+   tab <- cbind(0,read.table(inFile, header=TRUE, row.names=1, check.names=FALSE))
+   tab <- tab[rownames(tab) == word,]
+   rownames(tab) <- 1
+   xvals <- as.numeric(colnames(tab))
+   gEnrich <- c(gEnrich, tab)
+}
+
+genData <- data.frame(sylEnrich = unlist(gEnrich),
+                      method = factor(rep(gMthd, each = 21),
+                                     levels = c("limma-voom",
+                                                "sleuth",
+                                                "edgeR")),
+                      quant = factor(rep(gQuant, each = 21),
+                                     levels = c("featureCounts",
+                                                "stringtie",
+                                                "kallisto")),
+                      no.UTR = rep(xvals, length(gQuant)),
+                      experiment = factor(rep(gExprmnt, each = 21)),
+                      file = paste(rep(gMthd, each = 21), rep(gQuant, each = 21)))
+
+ggplot(genData, aes(x=no.UTR, y=sylEnrich, group=file,
+                    colour = method, linetype = quant)) +
+  facet_grid(. ~ experiment) +
+  geom_line()
+
+inFiles <- list.files("../output/sylamer/", ".+Syl.tsv.gz", full.names=TRUE, recursive=TRUE)
+
+gEnrich <- numeric()
+gMthd <- character()
+gQuant <- character()
+gMlcl <- character()
+gExprmnt <- character()
+for (inFile in inFiles) {
+   print(inFile)
+   word <- "ACACTCC"
+   contrst <- sub("(.+).Syl.tsv.gz", "\\1", basename(inFile))
+   mthd <- sub("[^_]+_([^_]+)_.+.Syl.tsv.gz", "\\1", basename(inFile))
+   quantAp <- sub("[^_]+_[^_]+_([^_]+)_.+.Syl.tsv.gz", "\\1", basename(inFile))
+   molcl <- sub("([^_]+)_[^_]+_[^_]+_.+.Syl.tsv.gz", "\\1", basename(inFile))
+   exprmnt <- sub("[^_]+_[^_]+_[^_]+_(SRP[^_]+)_.+.Syl.tsv.gz", "\\1", basename(inFile))
+   if(exprmnt == "SRP102517")
+     word <- "ACACTCC"
+   else
+     word <- "AGCATTA"
+   gMthd <- c(gMthd, mthd)
+   gQuant <- c(gQuant, quantAp)
+   gMlcl <- c(gMlcl, molcl)
+   gExprmnt <- c(gExprmnt, exprmnt)
+   tab <- cbind(0,read.table(inFile, header=TRUE, row.names=1, check.names=FALSE))
+   tab <- tab[rownames(tab) == word,]
+   rownames(tab) <- 1
+   xvals <- as.numeric(colnames(tab))
+   gEnrich <- c(gEnrich, tab)
+}
+
+genData <- data.frame(sylEnrich = unlist(gEnrich), method = factor(rep(gMthd, each = 21),
+                                     levels = c("limma-voom",
+                                                "sleuth",
+                                                "edgeR")),
+                      quant = factor(rep(gQuant, each = 21),
+                                     levels = c("featureCounts",
+                                                "stringtie",
+                                                "kallisto")),
+                      molecule = factor(rep(gMlcl, each = 21)),
+                      experiment = factor(rep(gExprmnt, each = 21)),
+                      prcnt.UTR = rep(xvals/max(xvals), length(gQuant)),
+                      file = paste(rep(gMlcl, each = 21),
+                                   rep(gMthd, each = 21),
+                                   rep(gQuant, each = 21),
+                                   rep(gExprmnt, each = 21)))
+
+ggplot(genData, aes(x=prcnt.UTR, y=sylEnrich, group=file,
+                    colour = method, linetype = experiment)) +
+  facet_grid( quant ~ molecule ) +
+    geom_line() +
+  background_grid(major = "xy", minor = "none")
+
+  # geom_point() +
+```
